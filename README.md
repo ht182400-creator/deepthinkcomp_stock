@@ -21,6 +21,24 @@ http://127.0.0.1:8899/
 - **Tab 路由**：拆解卡 · 本周推荐 · 个股详情 · 历史回测 …
 - **本周推荐 → 个股详情**：点击推荐行代码，`#/stock/<code>?from=rec` 进入完整个股详情
 
+### 功能截图
+
+**① 本周推荐**（Tab 3）：左侧客户信息 + 选股规则；右侧滚动收益排行榜，含评级（市值/估值/PEG）/ROE/扣非增速/资产负债率等关键指标，命中字段红色高亮。
+
+![本周推荐](docs/screenshots/01-recommend-list.png)
+
+**② 个股详情**（完整移植 deepthinkSingle）：左列分时 + 副图（VOLFS 成交量、资金博弈主力净额+散户黄线）+ 近 5 日主力净流入；中列深色盘口（5 档卖/大字现价 58.47/5 档买/ob-stats 8 行×2 列实时数据）+ 逐笔成交；右列 13 个 mp-section（行情/估值/财务/年度净利/主力多空/融资融券/股东户数/龙虎榜/北向资金/公司/盈利预测/最新公告）。
+
+![个股详情](docs/screenshots/02-stock-detail.png)
+
+**③ 历史回测**（Tab 4）：策略分区 5 段 + 实时净值曲线（含 50/150 日均线）+ 标准差/夏普/最大回撤 + 退换手/当前仓位/成交股票数 + 同期上证指数对照图。
+
+![历史回测](docs/screenshots/03-backtest.png)
+
+**④ HTML 报告**：策略分组 + 净值/胜率柱状图 + 板块配比横向柱图 + 五只重点持仓股票详情表（代码/名称/板块/现价/涨跌/量比/扣非增速/ROE/资产负债率/PE/换手率/市场容量）+ 综合 KPI 解释与策略结论。
+
+![HTML 报告](docs/screenshots/04-html-report.png)
+
 ## 个股详情（deepthinkSingle 1:1 完整移植）
 
 `static/js/modules/stock.js` 是薄壳：渲染 `single-template.js` 的完整 DOM，由 `single-app.js`（原 deepthinkSingle app.js）驱动。功能清单见 `docs/05-接口规范.md §6.4`，包括：
