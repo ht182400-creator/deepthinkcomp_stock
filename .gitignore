@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# 运行时数据（本地行情缓存 / 复盘记录 / 自选 / 持仓 / 日志等）
+data/
+logs/
+*.log
+
+# 临时调试文件
+_*.js
+*.tmp
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地记忆（不入库）
+.workbuddy/

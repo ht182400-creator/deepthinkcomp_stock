@@ -1,0 +1,6 @@
+# DeepThinkCompStock 依赖（最小化）
+fastapi>=0.110
+uvicorn>=0.29
+requests>=2.31
+pypinyin>=0.50
+httpx>=0.27

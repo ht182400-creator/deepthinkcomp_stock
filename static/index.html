@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>持仓管理 · 客户工具</title>
+<link rel="stylesheet" href="/static/css/style.css?v=20260817e">
+<link rel="stylesheet" href="/static/css/stock.css?v=20260817e">
+<script src="/static/js/echarts.min.js?v=20260817e"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-main">
+    <span class="brand">持仓管理 · 客户工具</span>
+    <span class="version">V0.3_web</span>
+    <span id="clock" class="clock"></span>
+  </div>
+  <div class="topbar-sub" id="envInfo">DeepThinkCompStock · P3 前端</div>
+</header>
+
+<div class="toolbar">
+  <label class="ck"><input type="checkbox" id="forceRefresh"> 强制刷新最新行情（较慢）</label>
+  <label class="ck"><input type="checkbox" id="autoTrack"> 自动跟踪（按推荐更新持仓）</label>
+  <span class="spacer"></span>
+  <button class="btn primary" id="btnAnalyze">保存并分析</button>
+  <button class="btn" id="btnLog">日志</button>
+  <span id="statusText" class="status">就绪</span>
+</div>
+
+<div class="progress-wrap" id="progressWrap">
+  <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+  <span class="progress-state" id="progressState">等待</span>
+</div>
+
+<div class="warn">⚠️ 本工具为策略研究展示，所有标的均为量化模型输出，<b>不构成投资建议</b>。请结合自身风险承受能力独立决策。</div>
+
+<div class="layout">
+  <aside class="sidebar" id="sidebar">
+    <div class="card">
+      <div class="card-title">① 客户持仓录入</div>
+      <div class="field">
+        <label>分类</label>
+        <select id="poolCls">
+          <option value="all">全部</option>
+          <option value="sh">沪市</option>
+          <option value="sz">深市</option>
+          <option value="bj">北交所</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>标的（<span id="poolCount">--</span> 只可选）</label>
+        <input id="poolInput" list="poolList" placeholder="输入代码或名称搜索">
+        <datalist id="poolList"></datalist>
+      </div>
+      <div class="field">
+        <label>买入金额（元）</label>
+        <input id="holdAmount" type="number" value="10000" min="100" step="100">
+      </div>
+      <div class="field">
+        <label class="ck"><input type="checkbox" id="holdDingtou"> 该标的为定投（每月定投）</label>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="btnAdd">+ 添加/更新持仓</button>
+        <button class="btn danger" id="btnDel">删除选中</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">当前持仓（<span id="holdCount">0</span> 只）</div>
+      <table class="mini">
+        <thead><tr><th>标的</th><th class="num">金额(元)</th><th>定投</th><th>买入日期</th></tr></thead>
+        <tbody id="holdTable"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">每周定投预算 / 新建仓预算</div>
+      <div class="field">
+        <label>定投预算（元/周）</label>
+        <input id="setWeekly" type="number" value="10000" min="0" step="100">
+      </div>
+      <div class="field">
+        <label>新建仓预算（元/只）</label>
+        <input id="setNewpos" type="number" value="5000" min="0" step="100">
+      </div>
+      <div class="field">
+        <label class="ck"><input type="checkbox" id="setAutoTrack"> 开启自动跟踪</label>
+      </div>
+      <div class="hint">开启 [自动跟踪] 后保存并分析会自动按推荐更新持仓金额。</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="tabs" id="tabBar">
+      <div class="tab" data-tab="holdings">① 持仓操作卡</div>
+      <div class="tab" data-tab="rec">② 本周推荐</div>
+      <div class="tab" data-tab="stock">③ 个股详情</div>
+      <div class="tab" data-tab="bt">④ 历史回测</div>
+      <div class="tab" data-tab="html">⑤ HTML 报告</div>
+      <div class="tab" data-tab="md">⑥ MD 报告</div>
+      <div class="tab" data-tab="log">⑦ 下载日志</div>
+    </div>
+
+    <div class="tab-pane" id="pane-holdings"></div>
+    <div class="tab-pane" id="pane-rec"></div>
+    <div class="tab-pane" id="pane-stock">
+      <div class="pane-head">
+        <span><button class="btn-back" id="btnBack">← 返回</button>
+          <span id="stockTitle">加载中...</span></span>
+        <span class="signal" id="stockSource">--</span>
+      </div>
+      <div class="stock-grid">
+        <div class="stock-card" id="cardQuote"><h4>行情概况</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card" id="cardOrderBook"><h4>五档盘口</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card tall" id="cardMinute"><h4>分时走势（现价/均价）</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card tall" id="cardFund"><h4>主力资金</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card" id="cardFlow"><h4>资金博弈（主散净额）</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card" id="cardFundamentals"><h4>财务摘要（5年）</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card" id="cardHolders"><h4>股东户数</h4><div class="empty">加载中...</div></div>
+        <div class="stock-card" id="cardNews"><h4>新闻公告</h4><div class="empty">加载中...</div></div>
+      </div>
+    </div>
+    <div class="tab-pane" id="pane-bt"></div>
+    <div class="tab-pane" id="pane-html"></div>
+    <div class="tab-pane" id="pane-md"></div>
+    <div class="tab-pane" id="pane-log"></div>
+  </main>
+</div>
+
+<footer>本工具仅供研究参考，不构成个人投资建议。数据来源：通达信本地行情 + 东方财富基本面 + 腾讯行情。</footer>
+
+<script src="/static/js/modules/single-indicators.js?v=20260817e"></script>
+<script src="/static/js/modules/single-app.js?v=20260817e"></script>
+<script src="/static/js/app.js?v=20260817e"></script>
+</body>
+</html>
