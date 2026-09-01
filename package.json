@@ -1,0 +1,21 @@
+{
+  "name": "deepthinkcomp_stock",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test:frontend": "node --test --test-force-exit \"tests/frontend/*.test.js\"",
+    "test:backend": "python -m unittest discover tests -p \"test_*.py\"",
+    "test": "npm run test:frontend && npm run test:backend"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
