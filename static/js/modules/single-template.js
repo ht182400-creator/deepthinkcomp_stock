@@ -21,6 +21,7 @@ export const SINGLE_HTML = `
       <button id="delBtn" title="把当前标的移出自选">−</button>
       <button id="refreshBtn" title="立即刷新行情">刷新</button>
       <button id="klineBtn" title="切换 K线/分时视图">K线</button>
+      <button id="financeBtn" title="财务分析（指标 / 诊断 / 趋势 / 估值）">财务</button>
       <button id="watchlistBtn" title="自选批量表格">自选</button>
       <button id="analysisBtn" title="复盘/分析记录">复盘</button>
       <span class="muted" id="updateTime"></span>
@@ -85,6 +86,31 @@ export const SINGLE_HTML = `
     <section class="panel" id="klineMarket">
       <div class="phead">市场综合（参考示例图：行情/估值/财务/净利/多空/两融/股东/龙虎榜/公司/预测/公告）</div>
       <div id="klineMarketPanel" class="market-panel kline-mp"></div>
+    </section>
+  </div>
+
+  <!-- 财务分析视图（数据源：本地财务面板 65 列，零网络） -->
+  <div id="financeView" class="hidden">
+    <section class="panel">
+      <div class="phead row-flex">
+        <span id="finTitle">财务分析</span>
+        <div class="fin-tabs" id="finTabs">
+          <button class="fin-tab active" data-t="indicators">财务指标</button>
+          <button class="fin-tab" data-t="diagnose">财务诊断</button>
+          <button class="fin-tab" data-t="trend">成长趋势</button>
+          <button class="fin-tab" data-t="valuation">估值分析</button>
+          <button class="fin-tab" data-t="dupont">杜邦分析</button>
+          <button class="fin-tab" data-t="quarterly">单季度</button>
+          <button class="fin-tab" data-t="changes">变动说明</button>
+          <button class="fin-tab" data-t="cashflow">现金流</button>
+          <button class="fin-tab" data-t="balance">资产负债</button>
+          <button class="fin-tab" data-t="volume">本地量价</button>
+        </div>
+        <span class="muted small" id="finMeta"></span>
+        <button id="finBack" class="ghost">返回K线</button>
+      </div>
+      <div id="finMsg" class="muted small"></div>
+      <div class="fin-body" id="finBody"></div>
     </section>
   </div>
 

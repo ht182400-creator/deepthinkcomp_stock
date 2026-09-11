@@ -121,9 +121,41 @@ def get_minute_with_meta(code: str, date: str) -> dict:
 # =====================================================================
 # 主力资金（东财，多节点在 eastmoney 内部处理）
 # =====================================================================
+import time
+
+# 资金流失败熔断：东财对部分标的（实测 sh688300 等）**长期无数据**，
+# 而前端每 10s 刷新一次 → 每次失败都重试 3 次，导致日志持续刷屏且浪费请求。
+# 故失败后熔断一段时间，期间直接返回空列表；TTL 过期后自动恢复重试。
+_FF_FAIL_TTL = 600          # 秒：失败后 10 分钟内不再请求东财
+_ff_fail_at = {}
+
+
 def get_fund_flow(code: str) -> list:
-    return fund_cache.get_or_set(f"fund:{code}",
-                                 lambda: fb.fallback(["eastmoney"], "get_fund_flow", code)[0])[0]
+    """主力资金流（东方财富）。
+
+    **优化**：失败熔断 + 日志降级（仅首次 WARNING，后续 DEBUG）。
+    熔断只影响"确定无数据"这类失败，一旦成功立即解除，不影响正常标的。
+    """
+    _log = logging.getLogger("deepthink")
+    now = time.time()
+    fail_at = _ff_fail_at.get(code)
+    if fail_at is not None and (now - fail_at) < _FF_FAIL_TTL:
+        return []                       # 熔断中：直接返回空，不再请求
+    try:
+        out = fund_cache.get_or_set(
+            f"fund:{code}",
+            lambda: fb.fallback(["eastmoney"], "get_fund_flow", code)[0])[0]
+        _ff_fail_at.pop(code, None)     # 成功 → 解除熔断
+        return out or []
+    except Exception as e:
+        first = code not in _ff_fail_at
+        _ff_fail_at[code] = now
+        if first:
+            _log.warning("get_fund_flow %s 无数据，已熔断 %ds（期间不再重试）: %s",
+                         code, _FF_FAIL_TTL, e)
+        else:
+            _log.debug("get_fund_flow %s 仍在熔断中: %s", code, e)
+        return []
 
 
 # =====================================================================

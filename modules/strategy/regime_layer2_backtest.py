@@ -251,7 +251,9 @@ def make_regime_fn(scheme, indices, e_window=200):
 def run_backtest_layer2(stocks, global_dates, scheme, regime_fn, regime_scope,
                         N=15, mom_window=52, val_window=260, cost_per_side=0.0012,
                         tail_expo=0.0, warmup=220, price_cap=300.0, ind_cap=0.35, freq='W',
-                        start_date=None, end_date=None):
+                        start_date=None, end_date=None, universe_by_period=None,
+                        stop_fixed=None, stop_trail=None, stop_port=None, bear_expo=None,
+                        market_up_series=None):
     meta={}
     for code,s in stocks.items():
         d=s['dates']; c=s['close']
@@ -268,14 +270,38 @@ def run_backtest_layer2(stocks, global_dates, scheme, regime_fn, regime_scope,
     if ed_int is not None:
         for i in range(t_start,len(all_dates)):
             if all_dates[i]>ed_int: t_end=i-1; break
+    # R0a 去前视：时点可见宇宙 {调整日(int): set(纯代码)}；每期取"<= 当日"的最近一期
+    vis_list = None
+    if universe_by_period:
+        _adj = sorted(universe_by_period.keys())
+        vis_list = []
+        _j = -1
+        for _d in all_dates:
+            while _j + 1 < len(_adj) and _adj[_j + 1] <= _d:
+                _j += 1
+            vis_list.append(universe_by_period[_adj[_j]] if _j >= 0 else set())
     equity=[1.0]; rets=[]; held={}; prev_w=None; turnover_l=[]; n_pool=[]; empty_bars=0
+    entry={}; peak={}       # 止损状态: {code: 买入价} / {code: 持仓期最高价}
     for t in range(t_start, t_end):
         bd=all_dates[t]
-        market_up = regime_fn(None, bd) if regime_scope=='global' else True
-        # 退出
+        visible = vis_list[t] if vis_list is not None else None
+        # 市场状态: 优先用外部序列(个股级策略的 bear_expo 需要); global 模式用 regime_fn
+        if market_up_series is not None:
+            market_up=market_up_series[t]
+        elif regime_scope=='global':
+            market_up=regime_fn(None, bd)
+        else:
+            market_up=True
+        # 退出（止损优先于动量/均线规则）
         for code in list(held):
             ti=meta[code]['di'].get(bd)
             if ti is None: continue
+            _px=meta[code]['c'][meta[code]['d'][ti]]
+            if _px>peak.get(code,_px): peak[code]=_px
+            if stop_fixed is not None and entry.get(code,0)>0 and _px<=entry[code]*(1.0+stop_fixed):
+                del held[code]; entry.pop(code,None); peak.pop(code,None); continue
+            if stop_trail is not None and peak.get(code,0)>0 and _px<=peak[code]*(1.0+stop_trail):
+                del held[code]; entry.pop(code,None); peak.pop(code,None); continue
             if regime_scope=='stock' and not regime_fn(code, bd):
                 del held[code]; continue
             mm=mom_metrics(meta[code]['d'], meta[code]['c'], ti, mom_window)
@@ -291,10 +317,11 @@ def run_backtest_layer2(stocks, global_dates, scheme, regime_fn, regime_scope,
                 del held[code]
         # 全局 regime 离场: 完全空仓型(tail_expo==0)清空持仓; 部分降仓型(E200H)只降暴露不清仓
         if regime_scope=='global' and (not market_up) and tail_expo==0.0:
-            held={}
+            held={}; entry={}; peak={}
         # 候选
         cands={}; codes=[]
         for code in stocks:
+            if visible is not None and code not in visible: continue
             ti=meta[code]['di'].get(bd)
             if ti is None: continue
             if regime_scope=='stock' and not regime_fn(code, bd): continue
@@ -332,13 +359,20 @@ def run_backtest_layer2(stocks, global_dates, scheme, regime_fn, regime_scope,
                 ci=meta[code]['sind']
                 if indc.get(ci,0)>=capn: continue
                 held[code]=1; indc[ci]=indc.get(ci,0)+1
+                entry[code]=cands[code][0]; peak[code]=cands[code][0]
         # 暴露: 分市场(B)始终0.9(个股段gate已过滤); 全局方案 market_up→0.9, 否则→tail_expo(0=空仓, 0.45=半仓)
         if regime_scope=='stock':
-            expo=0.9
+            # 个股级 regime 下默认恒定 0.9 暴露；给定 bear_expo 时按市场状态降仓
+            expo = 0.9 if (market_up or bear_expo is None) else bear_expo
         elif market_up:
             expo=0.9
         else:
             expo=tail_expo
+        # 组合级回撤降仓: 净值自历史峰值回撤超过阈值时, 暴露减半
+        if stop_port is not None:
+            _pe=max(equity) if equity else 1.0
+            if _pe>0 and (equity[-1]/_pe-1.0)<=stop_port:
+                expo*=0.5
         k=len(held)
         w={}
         if k:
@@ -368,7 +402,7 @@ def run_backtest_layer2(stocks, global_dates, scheme, regime_fn, regime_scope,
     return dict(freq=freq, periods=periods, total_return=total, annualized=ann,
                 vol_annual=vol_a, sharpe=sharpe, max_drawdown=mdd,
                 avg_quality_pool=avg_pool, avg_turnover=avg_to,
-                empty_frac=empty_frac, equity_curve=equity)
+                empty_frac=empty_frac, equity_curve=equity, t_start=t_start)
 
 def main():
     print("构建 Layer 2 宇宙(.day + read_qfq 全历史)...")
@@ -515,9 +549,30 @@ def _get_universe(include_bj=True):
     _UNIV_META[include_bj] = (ver, __import__("time").time())
     return u
 
+# ---- 组合约束（与回测 ind_cap 对齐 + 新增板块上限）----
+IND_CAP = 0.35              # 单行业上限占比（与 run_backtest_layer2 的 ind_cap 同一口径）
+BOARD_CAP = 0.50            # 单板块上限占比（N=4 → 最多 2 只）
+
+
+def _board_of(code):
+    """6 位代码 → 板块（主板 / 创业板 / 科创板 / 北交所）。
+
+    用于"单板块最多 N 只"约束，避免出现"4 只全是 688 科创板"这类**伪分散**
+    （名义 4 只、实质 1 只 —— 同板块同涨同跌）。
+    """
+    c = str(code or "")
+    if c.startswith(("688", "689")):
+        return "科创板"
+    if c.startswith(("300", "301")):
+        return "创业板"
+    if c.startswith(("8", "4", "920", "921")):
+        return "北交所"
+    return "主板"
+
+
 def current_candidates(scheme='B', N=4, mom_window=52, val_window=260,
                        price_cap=300.0, today=None, cash=50000.0, expo_base=0.9,
-                       include_bj=True):
+                       include_bj=True, ind_cap=IND_CAP, board_cap=BOARD_CAP):
     """实时买仓清单: 通达信 .day 全历史 + gbbq 前复权, regime 用 scheme。
     scheme: 'B'(分市场段指数,默认) / 'current'(上证) / 'A'(中证全指) / 'C'(内生) / 'E*'(尾部)。
     资金模型(默认): 5万账户 / 目标 N=4 仓 / 暴露0.9 / 100股手数;
@@ -610,7 +665,37 @@ def current_candidates(scheme='B', N=4, mom_window=52, val_window=260,
     per_pos = investable / N
     fea = [r for r in buy if r['price']*100 <= per_pos]
     fea_sorted = sorted(fea, key=lambda r:-r.get('score',0))
-    pick = fea_sorted[:N]
+    # 组合约束: 单行业 <= ind_cap*N, 单板块 <= board_cap*N
+    # (原先仅按 score 取前 N, 会出现"4 只全在同一行业/板块"的伪分散)
+    _ind_cap_n = max(1, int(math.floor(ind_cap * N))) if ind_cap else N
+    _bd_cap_n = max(1, int(math.floor(board_cap * N))) if board_cap else N
+
+    def _apply(ind_n, bd_n):
+        """按约束贪心选取，返回 (选中列表, 实际用到的板块上限)。"""
+        out, ic, bc = [], {}, {}
+        for _r in fea_sorted:
+            ci = _r.get('sind') or ''
+            bi = _board_of(_r['code'])
+            if ci and ic.get(ci, 0) >= ind_n:
+                continue
+            if bd_n and bc.get(bi, 0) >= bd_n:
+                continue
+            out.append(_r)
+            ic[ci] = ic.get(ci, 0) + 1
+            bc[bi] = bc.get(bi, 0) + 1
+            if len(out) >= N:
+                break
+        return out
+
+    pick = _apply(_ind_cap_n, _bd_cap_n)
+    constraint_relaxed = False
+    if len(pick) < N and _bd_cap_n:
+        # 候选集中在少数板块时（例如 8 只全是科创板），硬限板块会把持仓压到 2 只，
+        # 反而使单票仓位翻倍、风险更集中 → 放宽板块约束回填，
+        # **但保留行业约束**（行业才是真正的同涨同跌来源）。
+        _alt = _apply(_ind_cap_n, None)
+        if len(_alt) > len(pick):
+            pick, constraint_relaxed = _alt, True
     if pick and len(pick) < N:
         budget = investable / len(pick)          # 集中: 更少仓位, 单仓更大
     else:
@@ -633,6 +718,8 @@ def current_candidates(scheme='B', N=4, mom_window=52, val_window=260,
                 seg_indices={k:('OK' if k in indices else 'MISS') for k in ['sh000985','sh000688','sz399006','sz399001','bj899050']},
                 n_stocks=len(stocks), cash=cash, expo_base=expo_base, n_target=N,
                 investable=round(investable,2), per_pos=round(per_pos,2),
+                ind_cap_n=_ind_cap_n, board_cap_n=_bd_cap_n,
+                constraint_relaxed=constraint_relaxed,
                 buy=buy, selected=sel, observation=obs, bj_observe=bj_observe)
 
 def format_live_report(res):

@@ -1,7 +1,16 @@
-# DeepThinkCompStock 依赖（最小化）
+# DeepThinkCompStock 依赖（最小化：仅 Web 服务必需）
 fastapi>=0.110
 uvicorn>=0.29
 requests>=2.31
 pypinyin>=0.50
 httpx>=0.27
 certifi>=2024.7
+
+# ---- 面板 / 回测 / 财务分析（可选但强烈建议）----
+# 说明：本地数据面板（data/panel/*.parquet）依赖以下两项。
+# 缺失时 Web 服务仍可启动，但「财务分析」「回测对比」等会不可用，
+# 并报 ModuleNotFoundError: No module named 'pandas'。
+# 安装时请**用启动服务的那个 python**（server.py 启动时会打印 python 路径）：
+#   <python> -m pip install pandas pyarrow
+pandas>=2.0
+pyarrow>=14.0

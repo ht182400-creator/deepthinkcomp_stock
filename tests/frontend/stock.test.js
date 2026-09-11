@@ -262,3 +262,30 @@ test('语法: node --check stock.js / single-app.js / single-template.js', () =>
     assert.doesNotThrow(() => execSync(`node --check "${path.join(ROOT, 'static', 'js', 'modules', f)}"`, { stdio: 'pipe' }));
   });
 });
+
+// ============ 本地量价（volume_price 前端渲染）============
+test('本地量价: 经典量价图（价线 + 成交量柱）渲染', async () => {
+  const finMod = await import('file://' + path.join(ROOT, 'static', 'js', 'modules', 'single-finance.js').replace(/\\/g, '/'));
+  const volume = {
+    code: '600519',
+    periods: [20260904, 20260911],
+    close: [100, 101],
+    volume_yi: [1.2, 1.5],
+    amount_yi: [12, 15],
+    chg_pct: [null, 1.0],
+    vol_ratio: [null, 1.25],
+    pattern: ['--', '量价齐升'],
+    latest: { period: '20260911', close: 101, chg_pct: 1.0, vol_ratio: 1.25,
+      pattern: '量价齐升', amount_yi: 15, vol_trend_pct: 5, divergence: false },
+    tip: '量价齐升，量能配合良好',
+    note: '口径说明',
+    source: 'local_price_panel',
+  };
+  const root = { innerHTML: '' };
+  finMod.renderFinance(root, { volume }, 'volume', null);
+  const html = root.innerHTML;
+  assert.ok(html.includes('最新判读'), '包含最新判读横幅');
+  assert.ok(html.includes('finVolChart'), '包含量价图容器');
+  assert.ok(html.includes('成交量(亿股)'), '图例含成交量柱（经典量价图）');
+  assert.ok(html.includes('量价齐升'), '分周表格含量价形态');
+});

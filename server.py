@@ -24,6 +24,27 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
 
+def _boot_check():
+    """启动自检：打印解释器路径与关键依赖状态。
+
+    **背景**：本机存在多个 Python，服务器进程可能由"另一个 Python"启动，
+    从而缺少 ``pandas`` / ``pyarrow``，导致依赖本地面板的接口
+    （如 ``/api/stock/finance_full``）报 ``ModuleNotFoundError``。
+    本自检直接打印解释器路径 + 缺失依赖 + **可复制的安装命令**。
+    """
+    import importlib.util as _u
+    miss = [m for m in ("pandas", "pyarrow") if _u.find_spec(m) is None]
+    print("[boot] python = %s" % sys.executable, flush=True)
+    print("[boot] pandas/pyarrow = %s" % ("OK" if not miss else "MISSING -> " + ",".join(miss)),
+          flush=True)
+    if miss:
+        print("[boot] 缺依赖会导致「财务分析 / 回测」不可用。请用上面的 python 执行："
+              "\n       %s -m pip install %s" % (sys.executable, " ".join(miss)), flush=True)
+
+
+_boot_check()
+
+
 def setup_logging():
     logfile = os.path.join(LOG_DIR, "deepthink_%s_%d.log" % (
         datetime.date.today().isoformat(), os.getpid()))
@@ -408,16 +429,86 @@ async def api_stock_fund_flow(code: str = "sh600519"):
 
 
 @app.get("/api/stock/fundamentals")
-async def api_stock_fundamentals(code: str = "sh600519"):
-    """财务摘要：单期快照 + 历年净利趋势（profit_trend）。"""
+async def api_stock_fundamentals(code: str = "sh600519", price: float = None):
+    """财务摘要：**本地财务面板优先**（真实历史序列、零网络），网络抓取兜底。
+
+    本地源见 `panels/fund_local.py`（面板实测 248,528 行 × 65 列，含 2001 年至今季度序列）。
+    原网络版的问题：**没有历史序列**（把单期快照复制 N 份）、营收是反推近似值、依赖网络。
+
+    返回结构**保持与原契约一致**（前端无需改动），新增 `source` / `valuation` 字段。
+    """
     code = code.strip().lower()
+    # ---- 1) 本地面板优先 ----
+    try:
+        from panels.fund_local import get_fund_card
+        card = get_fund_card(code, price=price)
+        if not card.get("error"):
+            tr = card.get("trend") or {}
+            lat = card.get("latest") or {}
+            ps = [str(x) for x in (tr.get("periods") or [])]
+            # 按年聚合（每年取最后一期），与原契约的"年度点"一致；
+            # 完整季度明细另放 quarterly，前端可选使用。
+            _by_year = {}
+            for _i, _p in enumerate(ps):
+                _by_year[_p[:4]] = _i
+            _ys = sorted(_by_year)
+            _ix = [_by_year[_y] for _y in _ys]
+
+            def _pick(key, scale=1.0):
+                arr = tr.get(key) or []
+                out = []
+                for i in _ix:
+                    v = arr[i] if i < len(arr) and arr[i] is not None else 0
+                    out.append(round(v * scale, 6))
+                return out
+
+            return dict(
+                years=_ys,
+                revenue=_pick("rev_ttm_yi", 1e8),                            # 亿元 → 元（沿用原契约量级）
+                net_profit=_pick("np_ttm_yi", 1e8),
+                gross_margin=_pick("gp_margin"),                             # 百分数
+                net_margin=_pick("np_margin"),                               # 百分数
+                roe=[round(v / 100, 6) for v in _pick("roe")],               # 小数
+                debt_ratio=[round(v / 100, 6) for v in _pick("debt_ratio")],
+                eps=_pick("eps"),                                            # 累计 EPS（元）
+                quarterly=dict(periods=ps,
+                               roe=list(tr.get("roe") or []),
+                               gp_margin=list(tr.get("gp_margin") or []),
+                               np_margin=list(tr.get("np_margin") or []),
+                               debt_ratio=list(tr.get("debt_ratio") or []),
+                               rev_ttm_yi=list(tr.get("rev_ttm_yi") or []),
+                               np_ttm_yi=list(tr.get("np_ttm_yi") or []),
+                               rev_yoy=list(tr.get("rev_yoy") or []),
+                               np_yoy=list(tr.get("np_yoy") or []),
+                               eps=list(tr.get("eps") or [])),
+                snapshot=dict(report_date=lat.get("period"),
+                              report_type="",
+                              revenue=(lat.get("rev_ttm_yi") or 0) * 1e8,
+                              net_profit=(lat.get("np_ttm_yi") or 0) * 1e8,
+                              eps=lat.get("eps"), roe_pct=lat.get("roe"),
+                              gross_margin=lat.get("gp_margin"),
+                              debt_ratio=lat.get("debt_ratio"),
+                              rev_yoy=lat.get("rev_yoy"), np_yoy=lat.get("np_yoy"),
+                              np_deduct_yoy=lat.get("np_deduct_yoy"),
+                              ocf_to_np=lat.get("ocf_to_np"),
+                              current_ratio=lat.get("current_ratio"),
+                              holders=lat.get("holders"),
+                              total_assets_yi=lat.get("total_assets_yi"),
+                              total_equity_yi=lat.get("total_equity_yi"),
+                              notice_date=lat.get("notice_date")),
+                valuation=card.get("valuation") or {},
+                n_periods=card.get("n_periods_total"),
+                source="local_fund_panel",
+                cached_at="")
+    except Exception as e:
+        LOG.warning("api/stock/fundamentals 本地源失败 %s: %s（转网络兜底）", code, e)
+    # ---- 2) 网络兜底（原逻辑） ----
     try:
         from sources.company import get_finance_summary, get_profit_trend
         snap = get_finance_summary(code) or {}
         trend = get_profit_trend(code, years=5) or []
         years = [x.get("year", "") for x in trend]
         net_profit = [x.get("net_profit", 0) for x in trend]
-        # 营收趋势（无独立接口时用快照 + 净利趋势的 yoy 反推，标 approximation）
         revenue = []
         for i, x in enumerate(trend):
             if i == 0:
@@ -440,9 +531,41 @@ async def api_stock_fundamentals(code: str = "sh600519"):
                           eps=snap.get("eps"),
                           roe_pct=snap.get("roe"),
                           gross_margin=snap.get("gross_margin")),
+            source="network",
             cached_at=snap.get("cached_at", ""))
     except Exception as e:
         LOG.error("api/stock/fundamentals %s 失败: %s", code, e)
+        return {"error": str(e)}
+
+
+@app.get("/api/stock/finance_full")
+async def api_stock_finance_full(code: str = "sh600519", periods: int = 8, price: float = None):
+    """**财务分析模块**完整数据（本地面板，零网络）。
+
+    返回三块：
+    - ``table``：财务指标表（27 个科目 × 多期，对应通达信"财务指标"）
+    - ``diag``：财务诊断（综合评分 + 盈利/成长/偿债/现金流/运营 五维雷达）
+    - ``card``：估值与趋势（PE_TTM / PB / PS + 年度与季度序列）
+
+    前端用法见 `static/js/modules/single-finance.js`。
+    """
+    code = code.strip().lower()
+    try:
+        from panels.fund_local import (get_fin_table, diagnose, get_fund_card, dupont,
+                                       get_quarterly, get_balance, get_cashflow)
+        from panels.volume_price import get_volume_price
+        return dict(code=code,
+                    table=get_fin_table(code, periods=periods),
+                    diag=diagnose(code),
+                    card=get_fund_card(code, price=price),
+                    dupont=dupont(code, periods=periods),
+                    quarterly=get_quarterly(code, periods=periods),
+                    balance=get_balance(code, periods=periods),
+                    cashflow=get_cashflow(code, periods=periods),
+                    volume=get_volume_price(code, weeks=periods),
+                    source="local_panel")
+    except Exception as e:
+        LOG.error("api/stock/finance_full %s 失败: %s", code, e)
         return {"error": str(e)}
 
 
