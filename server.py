@@ -13,6 +13,7 @@ import json
 import glob
 import logging
 import datetime
+import subprocess
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)   # 保证 import config/core/sources/services 生效
@@ -249,6 +250,12 @@ async def api_quote(code: str = "sh600519"):
     code = code.strip().lower()
     try:
         data = svc.get_all(code)
+        # 端点级兜底：service 层已收口归一化，这里再保一次——本接口曾漏归一化，
+        # 使单股页分时图（single-app.js 用 /api/quote 的 minute）均价显示为现价的 1/100。
+        if isinstance(data.get("minute"), list):
+            data["minute"] = _normalize_minute_avg(data["minute"])
+        if isinstance(data.get("quote"), dict) and isinstance(data["quote"].get("minute"), list):
+            data["quote"]["minute"] = _normalize_minute_avg(data["quote"]["minute"])
         data["errors"] = data.get("errors", [])
         return data
     except Exception as e:
@@ -299,7 +306,9 @@ async def api_minute(code: str = "", date: str = ""):
     try:
         if date:
             return svc.get_minute_with_meta(code, date)
-        return svc.get_minute(code, date)
+        rows = svc.get_minute(code, date)
+        # 与 /api/stock/tick 一致：均价以同分钟价格自校准（防部分源量纲偏差导致均价小 100 倍）
+        return _normalize_minute_avg(rows) if isinstance(rows, list) else rows
     except Exception as e:
         LOG.error("api/minute %s/%s 失败: %s", code, date, e)
         return {"error": str(e)}
@@ -348,19 +357,15 @@ async def api_stock_quote(code: str = "sh600519"):
 @app.get("/api/stock/tick")
 async def api_stock_tick(code: str = "sh600519", date: str = ""):
     """分时（240 根分钟线：时间/价格/均价/量/额）。
-    修复 10 类历史 bug 第 6 条：腾讯/东财返回的 avg 是"价格×0.01"格式（0.562 表示 56.2），适配层 ×100 还原为元。"""
+
+    均价统一由 `_normalize_minute_avg` 以**同分钟价格**为基准自校准：
+    部分数据源按"手"口径多除了 100，会让高价股均价小 100 倍（219 元显示成 2.19），
+    旧的 `avg < 1 才 ×100` 判据对高价股失效，故改为"×100 是否更接近 price"来判断。
+    """
     code = code.strip().lower()
     try:
         rows = svc.get_minute(code, date.strip().replace("-", ""))
-        for r in rows:
-            if isinstance(r, dict) and "avg" in r:
-                try:
-                    a = float(r["avg"])
-                    if a < 1.0:
-                        r["avg"] = round(a * 100, 4)
-                except (TypeError, ValueError):
-                    pass
-        return {"items": rows, "source": "fallback"}
+        return {"items": _normalize_minute_avg(rows), "source": "fallback"}
     except Exception as e:
         LOG.error("api/stock/tick %s 失败: %s", code, e)
         return {"error": str(e)}
@@ -824,15 +829,9 @@ def _quote_to_deepthink_shape(q: dict) -> dict:
     )
 
 
-def _normalize_minute_avg(items: list) -> list:
-    """修复腾讯 ifzq 的 avg×100 误差。"""
-    out = []
-    for x in items or []:
-        m = dict(x); a = m.get("avg")
-        if isinstance(a, (int, float)) and 0 < a < 1.0:
-            m["avg"] = round(a * 100, 4)
-        out.append(m)
-    return out
+# 均价归一化已收口到 service 层（所有分时消费方共用一个入口），
+# 此处保留同名引用以兼容既有调用点与单测。
+_normalize_minute_avg = svc.normalize_minute_avg
 
 
 def _derive_day5_funds(klines: list) -> list:
@@ -933,6 +932,26 @@ async def api_pool(cls: str = "all"):
     return {"total": len(pool), "items": pool}
 
 
+def _rebuild_dashboard():
+    """持仓变更后重建看板 HTML，使报告 ①「我的实际持仓」与左侧「当前持仓」保持同步。
+
+    仅当已存在 live_buy_list_*.txt 时重建（无 txt 时 build_dashboard 会直接退出）；
+    重建失败只记日志，不影响持仓操作本身。
+    """
+    try:
+        if not glob.glob(os.path.join(DATA_DIR, "live_buy_list_*.txt")):
+            return
+        dash_py = os.path.join(BASE_DIR, "modules", "strategy", "build_dashboard.py")
+        if not os.path.exists(dash_py):
+            return
+        r = subprocess.run([sys.executable, dash_py], cwd=BASE_DIR,
+                           capture_output=True, text=True, timeout=120)
+        A.log_line("看板已随持仓变更重建" if r.returncode == 0
+                   else f"看板重建失败 rc={r.returncode} {r.stderr[:120]}")
+    except Exception as e:
+        A.log_line(f"看板重建异常: {e}")
+
+
 @app.get("/api/holdings")
 async def api_holdings():
     return {"items": H.get_holdings()}
@@ -953,6 +972,7 @@ async def api_holdings_add(body: dict):
                                 industry=pool_map[code]["industry"])
     log_line = A.log_line
     log_line(f"添加/更新持仓 {code} amount={amount} dingtou={dingtou}")
+    _rebuild_dashboard()
     return {"items": holdings}
 
 
@@ -961,6 +981,16 @@ async def api_holdings_delete(body: dict):
     codes = list(body.get("codes", []))
     holdings = H.delete_holdings(codes)
     A.log_line(f"删除持仓 {sorted(codes)}")
+    _rebuild_dashboard()
+    return {"items": holdings}
+
+
+@app.post("/api/holdings/clear")
+async def api_holdings_clear():
+    """一键清空全部持仓（报告 ① 随之变为"暂无持仓"）。"""
+    holdings = H.clear_holdings()
+    A.log_line("清空全部持仓")
+    _rebuild_dashboard()
     return {"items": holdings}
 
 

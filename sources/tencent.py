@@ -106,8 +106,10 @@ class TencentSource(Source):
             out.append({
                 "t": t,
                 "price": price,
-                    # 腾讯 ifzq：cum_vol 单位为"手"（1手=100股），cum_amt 单位为"元"
+                # 腾讯 ifzq：cum_vol 单位为"手"（1手=100股），cum_amt 单位为"元"
                 # 均价 = 元/股 = cum_amt / (cum_vol * 100)
+                # 注：个别标的/源会出现量纲偏差（均价小 100 倍），由 server._normalize_minute_avg
+                #     以"同分钟价格"为基准统一自校准，勿在此处再猜单位。
                 "avg": round(cum_amt / (cum_vol * 100), 3) if cum_vol else price,
                 "vol": minute_vol,      # 每分钟成交量（手）
                 "amount": minute_amt,   # 每分钟成交额（元）

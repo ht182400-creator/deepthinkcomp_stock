@@ -620,7 +620,27 @@ def get_balance(code, periods=6):
             "current_ratio": _f(last.get("CURRENT_RATIO"), 1.0, digits=3),
             "quick_ratio": _f(last.get("QUICK_RATIO"), 1.0, digits=3),
         }
+
+        # 各期比率序列（与 periods 等长），供前端做"同期对比"与趋势判断
+        def _ratio_series(num_col, den_col, scale=100.0):
+            if num_col not in sub.columns or den_col not in sub.columns:
+                return []
+            out = []
+            for n_v, d_v in zip(sub[num_col].tolist(), sub[den_col].tolist()):
+                n_f, d_f = _f(n_v, _YUAN), _f(d_v, _YUAN)
+                out.append(round(n_f / d_f * scale, 2) if (n_f and d_f) else None)
+            return out
+
+        ratio_series = {
+            "current_assets_pct": _ratio_series("CA_TOTAL", "TOTAL_ASSETS"),
+            "current_liab_pct": _ratio_series("CL_TOTAL", "TOTAL_LIAB"),
+            "debt_ratio": _ratio_series("TOTAL_LIAB", "TOTAL_ASSETS"),
+            "current_ratio": _ratio_series("CA_TOTAL", "CL_TOTAL", 1.0),
+            "quick_ratio": ([_f(v, 1.0, digits=3) for v in sub["QUICK_RATIO"].tolist()]
+                            if "QUICK_RATIO" in sub.columns else []),
+        }
         return {"code": p6, "periods": pers, "rows": rows,
+                "ratio_series": ratio_series,
                 "latest_period": pers[-1] if pers else "",
                 "latest": {"total_assets_yi": ta, "current_assets_yi": ca,
                            "noncurrent_assets_yi": _f(last.get("NCA_TOTAL"), _YUAN),

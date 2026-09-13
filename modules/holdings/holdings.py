@@ -76,6 +76,12 @@ def delete_holdings(codes):
     return holdings
 
 
+def clear_holdings():
+    """清空全部持仓记录（一键清空，不可撤销）。"""
+    _save(HOLDINGS_FILE, [])
+    return []
+
+
 # ---------------- 设置 ----------------
 def get_settings():
     s = DEFAULT_SETTINGS.copy()

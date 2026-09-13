@@ -111,6 +111,7 @@ async function addHolding() {
     $('#poolInput').value = '';
     await loadHoldings();
     await renderHoldingsPane();
+    reloadReportFrame();
   } catch (e) { alert(e.message); }
 }
 
@@ -124,6 +125,24 @@ async function delHoldings() {
   });
   await loadHoldings();
   await renderHoldingsPane();
+  reloadReportFrame();
+}
+
+async function clearAllHoldings() {
+  if (!holdings.length) { alert('当前没有持仓'); return; }
+  if (!confirm(`清空全部 ${holdings.length} 条持仓？此操作不可撤销`)) return;
+  try {
+    await fetchJSON(`${API}/api/holdings/clear`, { method: 'POST' });
+    await loadHoldings();
+    await renderHoldingsPane();
+    reloadReportFrame();
+  } catch (e) { alert(e.message); }
+}
+
+/** 持仓变更后让 HTML 报告 iframe 重新加载，使报告 ①「我的实际持仓」与左侧同步。 */
+function reloadReportFrame() {
+  const f = document.getElementById('htmlFrame');
+  if (f) f.src = `${API}/report/latest?t=${Date.now()}`;
 }
 
 // ==================== 设置 ====================
@@ -483,7 +502,7 @@ function renderHtmlReport() {
       <button class="btn primary" id="btnOpenHtml">打开最新 HTML 报告</button>
       <span class="hint">报告由 [保存并分析] 时生成</span>
     </div>
-    <iframe id="htmlFrame" class="report-frame" src="/report/latest"></iframe>`;
+    <iframe id="htmlFrame" class="report-frame" src="${API}/report/latest?t=${Date.now()}"></iframe>`;
   $('#btnOpenHtml').onclick = () => window.open('/report/latest', '_blank');
 }
 
@@ -613,6 +632,7 @@ async function renderAll(res) {
   const active = getActiveTab();
   if (active === 'holdings') await renderHoldingsPane();
   else if (active === 'rec') renderRecs(res);
+  reloadReportFrame();
 }
 
 // ==================== 初始化 ====================
@@ -629,6 +649,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   $('#btnAdd').addEventListener('click', addHolding);
   $('#btnDel').addEventListener('click', delHoldings);
+  $('#btnClearAll').addEventListener('click', clearAllHoldings);
   $('#btnAnalyze').addEventListener('click', doAnalyze);
   $('#btnLog').addEventListener('click', () => { location.hash = '#/log'; });
   $('#poolCls').addEventListener('change', loadPool);

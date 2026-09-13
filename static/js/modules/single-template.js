@@ -107,7 +107,7 @@ export const SINGLE_HTML = `
           <button class="fin-tab" data-t="volume">本地量价</button>
         </div>
         <span class="muted small" id="finMeta"></span>
-        <button id="finBack" class="ghost">返回K线</button>
+        <button id="finBack" class="ghost">返回图表</button>
       </div>
       <div id="finMsg" class="muted small"></div>
       <div class="fin-body" id="finBody"></div>

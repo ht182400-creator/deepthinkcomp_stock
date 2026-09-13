@@ -18,15 +18,17 @@ def _fake_res(selected_codes=None, buy_codes=None, obs_codes=None, per_pos=None)
     obs_codes = obs_codes or []
     def _mk(code, score=0.7, price=50.0, mom=0.5, roe=0.2, sind="化学制品", lots=100, cap=5000):
         return dict(code=code, name=f"股{code}", price=price, score=score,
-                    mom=mom, roe=roe, sind=sind, seg="sh000001",
-                    lots=lots, capital=cap, selected=code in selected_codes)
+                    mom=mom, roe=roe, sind=sind, seg="sh000001", regime="UP",
+                    fcfnp=0.5, lots=lots, capital=cap, selected=code in selected_codes)
     return dict(
         signal_date=20260814, scheme="B", regime_up=True, n_stocks=1687,
+        cash=50000.0, n_target=4, expo_base=0.9, investable=45000.0,
+        seg_indices={"sh000001": "OK"},
         buy=[_mk(c) for c in buy_codes],
         selected=[_mk(c) for c in selected_codes],
         observation=[dict(code=c, name=f"观{c}", roe=0.15, price=20.0, fail="未站线")
                      for c in obs_codes],
-        bj_observe=[], per_pos=(per_pos if per_pos is not None else 11250.0), expo_base=0.9,
+        bj_observe=[], per_pos=(per_pos if per_pos is not None else 11250.0),
     )
 
 
@@ -52,6 +54,14 @@ class TestHoldings(unittest.TestCase):
         # 删除
         H.delete_holdings(["688625"])
         self.assertEqual(len(H.get_holdings()), 1)
+
+    def test_clear_holdings(self):
+        """一键清空：清空后持仓列表为空。"""
+        H.upsert_holding("688625", 12000, True, "呈和科技", "化学制品")
+        H.upsert_holding("002484", 15000, False, "江海股份", "元件")
+        self.assertEqual(len(H.get_holdings()), 2)
+        H.clear_holdings()
+        self.assertEqual(H.get_holdings(), [])
 
     def test_settings_defaults(self):
         s = H.get_settings()
@@ -109,8 +119,10 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("test line", content)
 
     def test_submit_runs(self):
-        # mock current_candidates 避免真实构建宇宙
-        with patch.object(A.R, "current_candidates", return_value=_fake_res()):
+        # mock current_candidates 避免真实构建宇宙；同时 mock _persist_dashboard，
+        # 避免其内部刷新 live_compare（会读真实数据）拖慢用例
+        with patch.object(A.R, "current_candidates", return_value=_fake_res()), \
+             patch.object(A, "_persist_dashboard"):
             A.ANALYSIS["last_result"] = None
             ok = A.submit()
             self.assertTrue(ok)
@@ -183,6 +195,125 @@ class TestRecommendRules(unittest.TestCase):
             # 校验落盘参数：res 带 signal_date
             args, _ = pd.call_args
             self.assertEqual(args[0]["signal_date"], 20260814)
+
+
+class TestLiveReport(unittest.TestCase):
+    """回归：合格买仓池全量列出，不截断前 30（看板 ③ 需完整展示按评分降序）。"""
+
+    def test_pool_no_truncation(self):
+        import regime_layer2_backtest as R
+        codes = [f"{600000 + i:06d}" for i in range(35)]
+        res = _fake_res(selected_codes=codes[:4], buy_codes=codes)
+        txt = R.format_live_report(res)
+        self.assertIn("合格买仓池(质量+动量+站线+段regime): 35 只", txt)
+        # 35 只候选应全部出现在文本中（每只一行，含代码）
+        for c in codes:
+            self.assertIn(c, txt)
+
+    def test_pool_sorted_by_score_desc(self):
+        """评分降序：第一条池内记录应为评分最高的股票。"""
+        import regime_layer2_backtest as R
+        res = _fake_res(selected_codes=["600000"],
+                        buy_codes=["600000", "600001", "600002"])
+        # 人为设置评分：600001 最高
+        scores = {"600000": 0.10, "600001": 0.90, "600002": 0.50}
+        for r in res["buy"]:
+            r["score"] = scores[r["code"]]
+        txt = R.format_live_report(res)
+        pool_block = txt.split("合格买仓池")[1]
+        self.assertLess(pool_block.index("600001"), pool_block.index("600002"))
+        self.assertLess(pool_block.index("600002"), pool_block.index("600000"))
+
+
+class TestLiveCompare(unittest.TestCase):
+    """回归：write_compare 复用本周 cur + 重算上周，生成同源 live_compare.json。"""
+
+    def test_write_compare_pairs_prev_week(self):
+        import tempfile
+        import live_compare as LC
+        import regime_layer2_backtest as R
+        cur = _fake_res(selected_codes=["600000"], buy_codes=["600000", "600001"])
+        cur["signal_date"] = 20260814
+        prev = _fake_res(selected_codes=["600002"], buy_codes=["600002", "600001"])
+        prev["signal_date"] = 20260807
+        tmp = tempfile.mkdtemp()
+        with patch.object(R, "_get_universe",
+                          return_value=(None, [20260807, 20260814], None, None)), \
+             patch.object(R, "current_candidates", return_value=prev), \
+             patch.object(LC, "DATA", tmp):
+            out = LC.write_compare(cur)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "live_compare.json")))
+        self.assertEqual(out["current"]["signal_date"], 20260814)
+        self.assertEqual(out["prev"]["signal_date"], 20260807)
+        self.assertEqual(out["prev_signal_date"], 20260807)
+        self.assertIn("score", out["current"]["pool"][0])  # 池带评分，供 ③ 排序
+        self.assertEqual(out["current"]["selected"][0]["code"], "600000")
+        self.assertFalse(out["same_data"])
+
+
+@unittest.skipUnless(
+    os.path.exists(os.path.join(_ROOT, "data", "results_layer2_fresh.json")),
+    "缺少看板输入数据（data/results_layer2_fresh.json）")
+class TestDashboardHtml(unittest.TestCase):
+    """看板 HTML 结构回归：build_dashboard 是脚本，用子进程产出后再断言。
+
+    覆盖两个真实修过的问题：
+      ① ★建仓 原先裸挂在 <tr> 下（未包 <td>）→ 浏览器将其甩到表格格子之外，看起来"多出一行"；
+      ② ③ 合格池必须按评分降序，并展示"本周各市场段状态 + 板块分布"。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import glob
+        import subprocess
+        dash = os.path.join(_ROOT, "modules", "strategy", "build_dashboard.py")
+        if not os.path.exists(dash):
+            raise unittest.SkipTest("未找到 build_dashboard.py")
+        r = subprocess.run([sys.executable, dash], cwd=_ROOT, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise unittest.SkipTest("build_dashboard 运行失败: %s" % (r.stderr or "")[:200])
+        files = sorted(glob.glob(os.path.join(_ROOT, "data", "dashboard_*.html")))
+        if not files:
+            raise unittest.SkipTest("未生成 dashboard html")
+        with open(files[-1], encoding="utf-8") as f:
+            cls.html = f.read()
+
+    def test_star_inside_td(self):
+        """★建仓 必须包在 <td> 内，否则会脱出表格格子（原 bug）。"""
+        self.assertIn("<td><span class='star'>", self.html, "★建仓 应在 <td> 内")
+        self.assertNotIn("</td><span class='star'>", self.html, "★建仓 不应裸挂在 <tr> 下")
+
+    def test_pool_scores_sorted_desc(self):
+        """③ 合格池评分必须降序（评分类带配色样式，后紧跟"状态"单元格）。"""
+        import re
+        seg = self.html.split("③ 合格买仓池")[-1]
+        scores = [float(x) for x in re.findall(r"font-weight:700'>(\d\.\d+)</td><td>", seg)]
+        self.assertTrue(scores, "未从 ③ 解析到评分")
+        self.assertEqual(scores, sorted(scores, reverse=True), "评分未按降序排列")
+
+    def test_market_segment_note_present(self):
+        """必须展示本周各市场段状态与合格池板块分布（否则"为何全是同一板块"无从判断）。"""
+        self.assertIn("市场段(56周MA)", self.html)
+        self.assertIn("个市场段（56 周均线）", self.html)
+
+    def test_pool_score_gradient(self):
+        """③ 评分列按**同批相对**渐变着色：评分越高越红（色相 210°→0°）。"""
+        import re
+        seg = self.html.split("③ 合格买仓池")[-1]
+        cells = re.findall(
+            r"color:hsl\((\d+),\s*85%,\s*64%\);\s*"
+            r"background:hsla\(\d+,\s*85%,\s*45%,\s*([\d.]+)\);\s*"
+            r"font-weight:700'>(\d\.\d+)</td>",
+            seg)
+        self.assertGreaterEqual(len(cells), 2, "评分配色未渲染")
+        hues = [int(c[0]) for c in cells]         # 按行序（评分降序）
+        alphas = [float(c[1]) for c in cells]
+        scores = [float(c[2]) for c in cells]
+        self.assertEqual(scores, sorted(scores, reverse=True), "评分应降序")
+        self.assertEqual(hues, sorted(hues), "越红（色相越小）必须对应越高分")
+        self.assertLess(hues[0], hues[-1], "最高分应比最低分更红")
+        self.assertGreater(alphas[0], alphas[-1], "高分背景色应更实")
+        self.assertIn("评分列颜色 = 同批相对", self.html, "缺少配色图例")
 
 
 if __name__ == "__main__":

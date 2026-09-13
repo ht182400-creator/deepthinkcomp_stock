@@ -37,6 +37,9 @@ function makeFetch(state) {
       const arg = JSON.parse(opts.body);
       state.holdings = state.holdings.filter(h => !arg.codes.includes(h.code));
       body = { items: state.holdings };
+    } else if (u === '/api/holdings/clear') {
+      state.holdings = [];
+      body = { items: state.holdings };
     }
     return { ok: true, status: 200, statusText: 'OK', json: async () => body };
   };
@@ -55,7 +58,7 @@ function setup(state = {}) {
   window.clearInterval = () => {};
   window.alert = msg => alerts.push(msg);
   window.confirm = msg => { confirms.push(msg); return state.confirmOk !== false; };
-  window.eval(APPJS + `;\nwindow.__app = { renderHoldings, addHolding, delHoldings, loadHoldings, loadPool, loadSettings, saveSettings, doAnalyze, pollAnalyze, setProgress, renderHoldingsPane };`);
+  window.eval(APPJS + `;\nwindow.__app = { renderHoldings, addHolding, delHoldings, clearAllHoldings, loadHoldings, loadPool, loadSettings, saveSettings, doAnalyze, pollAnalyze, setProgress, renderHoldingsPane, reloadReportFrame };`);
   return window;
 }
 
@@ -166,5 +169,39 @@ test('侧栏: doAnalyze → POST /api/analyze', async () => {
   await doAnalyze();
   assert.ok(calls.some(c => c.url.includes('/api/analyze') && (c.opts || {}).method === 'POST'),
             '提交分析');
+  dom.window.close();
+});
+
+test('侧栏: clearAllHoldings 空持仓 → alert 不发请求', async () => {
+  const w = setup();
+  const { clearAllHoldings } = w.__app;
+  await clearAllHoldings();
+  assert.ok(alerts.some(a => a.includes('没有持仓')), '提示无持仓');
+  assert.ok(!calls.some(c => c.url.includes('/api/holdings/clear')), '不应发清空请求');
+  dom.window.close();
+});
+
+test('侧栏: clearAllHoldings 有持仓 → POST 清空 + 列表归零', async () => {
+  const w = setup({ holdings: [
+    { code: '688625', name: '呈和科技', amount: 12000, dingtou: false, date: '' },
+    { code: '002484', name: '江海股份', amount: 15000, dingtou: false, date: '' },
+  ]});
+  const { clearAllHoldings, loadHoldings } = w.__app;
+  await loadHoldings();
+  assert.equal(w.document.querySelector('#holdCount').textContent, '2');
+  await clearAllHoldings();
+  assert.equal(confirms.length, 1, '弹出确认框');
+  assert.ok(calls.some(c => c.url.includes('/api/holdings/clear')), '发送清空请求');
+  assert.equal(w.document.querySelector('#holdCount').textContent, '0', '清空后列表刷新');
+  dom.window.close();
+});
+
+test('侧栏: clearAllHoldings 取消确认 → 不发请求', async () => {
+  const w = setup({ holdings: [{ code: '688625', name: '呈和科技', amount: 100, dingtou: false, date: '' }],
+                    confirmOk: false });
+  const { clearAllHoldings, loadHoldings } = w.__app;
+  await loadHoldings();
+  await clearAllHoldings();
+  assert.ok(!calls.some(c => c.url.includes('/api/holdings/clear')), '取消则不发请求');
   dom.window.close();
 });

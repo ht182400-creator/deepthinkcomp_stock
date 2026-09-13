@@ -22,6 +22,11 @@ import json, math, os, datetime, sys, re
 import tdx_day_reader as T
 
 WORK = os.path.dirname(os.path.abspath(__file__))
+#: 产物输出目录：与 build_dashboard / live_compare / analysis 保持一致 → <repo>/data
+#: （注意 WORK 是**输入**目录：fundamentals_broad.json / all_xdxr.csv 都放在那里；
+#:  之前 live_report 把 live_buy_list_*.txt 写到 WORK，而看板读 data/ →
+#:  命令行生成的清单"看不见"，还留下 stray 文件）
+OUT = os.path.normpath(os.path.join(WORK, "..", "..", "data"))
 RF = 0.02
 FIN_KW = ["银行", "证券", "保险", "信托", "期货", "租赁", "财富", "金融", "基金"]
 INIT = 1.0
@@ -158,6 +163,11 @@ def seg_index_for(code):
     if c.startswith('8') or c.startswith('4') or c.startswith('92') or c.startswith('83') or c.startswith('43'): return 'bj899050'  # 北证50
     if c.startswith('6') or c.startswith('9'): return 'sh000001'       # 沪市(上证综指代理)
     return 'sz399001'                                                  # 深市(深证成指)
+
+#: 5 个市场段指数（B 方案按段裁决）与中文名，用于报告展示"本周哪些段是 UP"
+SEG_ORDER = ['sh000001', 'sz399001', 'sz399006', 'sh000688', 'bj899050']
+SEG_CN = {'sh000001': '上证(沪主板)', 'sz399001': '深成指(深主板)', 'sz399006': '创业板指',
+          'sh000688': '科创50', 'bj899050': '北证50'}
 
 def build_universe_layer2(min_weeks=60, include_bj=True):
     fund=json.load(open(os.path.join(WORK,'fundamentals_broad.json'),encoding='utf-8'))
@@ -598,6 +608,9 @@ def current_candidates(scheme='B', N=4, mom_window=52, val_window=260,
     si = global_dates.index(signal_date) if signal_date in global_dates else len(global_dates)-1
     bd = global_dates[si]
     market_up = fn(None, bd) if scheme not in ('B','C') else True
+    # 本周 5 个市场段的 UP/DOWN（B 方案按段过滤 → 必须在报告里明示，
+    # 否则用户看到"候选全是科创板"无从判断是策略过滤还是数据缺失）
+    seg_state = {k: _seg_up(k, indices, bd) for k in SEG_ORDER}
     per_pos = cash*expo_base/N
     buy=[]; obs=[]; bj_observe=[]
     for code,s in stocks.items():
@@ -714,7 +727,12 @@ def current_candidates(scheme='B', N=4, mom_window=52, val_window=260,
         if r['code'] not in selcodes:
             r['selected']=False; r['lots']=0
     obs.sort(key=lambda r:r.get('roe') or 0, reverse=True)
+    # 合格池板块分布（用于报告提示"候选是否集中在单一板块"）
+    board_dist={}
+    for r in buy:
+        _b=_board_of(r['code']); board_dist[_b]=board_dist.get(_b,0)+1
     return dict(signal_date=bd, scheme=scheme, regime_up=market_up,
+                seg_state=seg_state, board_dist=board_dist,
                 seg_indices={k:('OK' if k in indices else 'MISS') for k in ['sh000985','sh000688','sz399006','sz399001','bj899050']},
                 n_stocks=len(stocks), cash=cash, expo_base=expo_base, n_target=N,
                 investable=round(investable,2), per_pos=round(per_pos,2),
@@ -730,6 +748,17 @@ def format_live_report(res):
     L.append(f"账户={res['cash']:.0f}元  目标仓数N={res['n_target']}  暴露={res['expo_base']}  "
              f"可投={res['investable']:.0f}  单仓预算={res['per_pos']:.0f}  宇宙={res['n_stocks']}只")
     L.append(f"段指数: {res['seg_indices']}")
+    # 5 个市场段 UP/DOWN + 合格池板块分布 + 板块约束（报告据此解释"为何候选集中在某板块"）
+    _ss=res.get('seg_state') or {}
+    if _ss:
+        L.append("段状态(56周均线): " + " ".join(
+            f"{SEG_CN.get(k,k)}={'UP' if _ss.get(k) else 'DOWN'}" for k in SEG_ORDER))
+    _bd=res.get('board_dist') or {}
+    if _bd:
+        L.append("合格池板块分布: " + " ".join(
+            f"{k}={v}" for k,v in sorted(_bd.items(), key=lambda kv:-kv[1])))
+    L.append(f"板块约束: 单板块上限={res.get('board_cap_n')}只 单行业上限={res.get('ind_cap_n')}只 "
+             f"已放宽板块={'是' if res.get('constraint_relaxed') else '否'}")
     sel=res['selected']
     L.append(f"▶ 实际建仓(可行性集中, {len(sel)} 仓, 合计 {sum(r['capital'] for r in sel):.0f}元):")
     L.append("-"*82)
@@ -743,8 +772,9 @@ def format_live_report(res):
         L.append("  (无可行建仓: 合格候选均无法在单仓预算内整手, 或段regime全DOWN)")
     L.append("-"*82)
     buy=res['buy']
-    L.append(f"合格买仓池(质量+动量+站线+段regime): {len(buy)} 只 (★=已选入建仓)")
-    for r in sorted(buy, key=lambda r:-r.get('score',0))[:30]:
+    # 全量列出全部合格候选（按评分降序），不再截断前 30，供看板 ③ 完整展示
+    L.append(f"合格买仓池(质量+动量+站线+段regime): {len(buy)} 只 (★=已选入建仓, 按评分降序全量)")
+    for r in sorted(buy, key=lambda r:-r.get('score',0)):
         roe=(r['roe']*100 if r['roe'] is not None else 0.0)
         fcf=(r['fcfnp'] if r['fcfnp'] is not None else 0.0)
         star='★' if r.get('selected') else ' '
@@ -769,7 +799,8 @@ def live_report(scheme='B', cash=50000.0, n_target=4):
     用法: python regime_layer2_backtest.py live [B|current|A|C|E200H] [cash] [N]"""
     res=current_candidates(scheme=scheme, cash=cash, N=n_target)
     txt=format_live_report(res)
-    out=os.path.join(WORK, f"live_buy_list_{res['signal_date']}.txt")
+    os.makedirs(OUT, exist_ok=True)
+    out=os.path.join(OUT, f"live_buy_list_{res['signal_date']}.txt")
     with open(out, "w", encoding="utf-8") as f:
         f.write(txt+"\n")
     print(txt)

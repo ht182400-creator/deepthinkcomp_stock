@@ -45,17 +45,53 @@ def get_quote(code: str) -> dict:
     return quote_cache.get_or_set(f"quote:{code}", _fetch)[0]
 
 
+def normalize_minute_avg(items: list) -> list:
+    """自校准分时均价：均价必须与**同分钟价格**同量级。
+
+    背景：部分数据源（腾讯 ifzq）cum_vol 单位是"股"，若再按"手"除以 100，
+    均价会小 100 倍（实测 sh688300：同分钟 现价 179.02 / 均价 1.79）。
+    旧判据 `avg < 1 才 ×100` 对高价股失效，故改为：
+    **若 ×100 后更接近 price，则判定漏乘 100**，否则保持原值（幂等，可重复调用）。
+
+    **放在 service 层是唯一收口点**：`/api/quote`、`/api/many`、`/api/stock/full`、
+    `/api/minute`、`/api/stock/tick` 都从这里取分时，
+    避免再出现"某个接口忘了归一化"（历史上 /api/quote 就漏了，导致单股页分时图
+    涨跌幅正确、均价却小 100 倍）。
+    """
+    out = []
+    for x in items or []:
+        if not isinstance(x, dict):          # 非字典元素原样透传，不抛异常
+            out.append(x)
+            continue
+        m = dict(x)
+        try:
+            a = float(m.get("avg"))
+            p = float(m.get("price"))
+        except (TypeError, ValueError):
+            out.append(m)
+            continue
+        if a > 0 and p > 0 and abs(a * 100 - p) < abs(a - p):
+            m["avg"] = round(a * 100, 4)
+        out.append(m)
+    return out
+
+
 def get_minute(code: str, date: str = "") -> list:
-    """当日分时(date="") 或历史某日分时(date="YYYYMMDD")；当日走腾讯/东财，历史日优先通达信本地 .lc1。"""
+    """当日分时(date="") 或历史某日分时(date="YYYYMMDD")；当日走腾讯/东财，历史日优先通达信本地 .lc1。
+
+    返回前统一经 `normalize_minute_avg` 自校准均价（防个别源漏乘 100）。
+    """
     if date:
         key = f"minute:{code}:{date}"
         # 历史分时：通达信本地优先（突破腾讯近 30 天限制），无则回退腾讯/东财
         chain = ["tdx"] + config.QUOTE_SOURCES
-        return minute_cache.get_or_set(
+        rows = minute_cache.get_or_set(
             key,
             lambda: fb.fallback(chain, "get_minute", code, date=date)[0])[0]
-    return minute_cache.get_or_set(f"minute:{code}",
+        return normalize_minute_avg(rows)
+    rows = minute_cache.get_or_set(f"minute:{code}",
                                    lambda: fb.fallback(config.QUOTE_SOURCES, "get_minute", code)[0])[0]
+    return normalize_minute_avg(rows)
 
 
 def _minute_matches_day(code: str, date_dash: str, minute_rows: list) -> bool:
@@ -100,6 +136,7 @@ def get_minute_with_meta(code: str, date: str) -> dict:
     date_dash = f"{d8[:4]}-{d8[4:6]}-{d8[6:8]}"
     chain = ["tdx"] + config.QUOTE_SOURCES
     res, used = fb.fallback(chain, "get_minute", code, date=date)
+    res = normalize_minute_avg(res)      # 历史分时同样自校准均价
     local_last = tdx_last_minute_date(code)
     mismatch = False
     if used != "tdx" and res:

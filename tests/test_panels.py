@@ -362,6 +362,41 @@ class TestFundLocalRoeTtm(unittest.TestCase):
 
 
 @unittest.skipUnless(_PANEL_READY, "财务面板未构建，跳过")
+class TestBalanceRatioSeries(unittest.TestCase):
+    """资产负债接口：各期比率序列（供前端"同期对比 vs 上年同季"）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.data = fl.get_balance("sh688019")
+        if cls.data.get("error"):
+            raise unittest.SkipTest("sh688019 无资产负债数据: %s" % cls.data.get("error"))
+
+    def test_ratio_series_present_and_aligned(self):
+        """ratio_series 关键比率必须存在，且与 periods 等长。"""
+        rs = self.data.get("ratio_series")
+        self.assertIsInstance(rs, dict)
+        for k in ("debt_ratio", "current_ratio", "current_assets_pct", "current_liab_pct"):
+            self.assertIn(k, rs)
+            self.assertEqual(len(rs[k]), len(self.data["periods"]), k)
+
+    def test_latest_ratio_matches_ratios(self):
+        """最新期比率序列末位 ≈ ratios（另一来源），量级一致。"""
+        tail = self.data["ratio_series"]["debt_ratio"][-1]
+        r0 = self.data["ratios"]["debt_ratio"]
+        if tail is None or r0 is None:
+            self.skipTest("负债率字段缺失")
+        self.assertLess(abs(tail - r0), 1.0, "两处口径差异过大")
+
+    def test_same_quarter_last_year_available(self):
+        """若期数 ≥5，应能定位"上年同季"（报告期 − 10000）供同期对比。"""
+        pers = [str(p) for p in self.data["periods"]]
+        latest = str(self.data["latest_period"])
+        if len(pers) < 5:
+            self.skipTest("期数不足 5，无法对比上年同季")
+        self.assertIn(str(int(latest) - 10000), pers)
+
+
+@unittest.skipUnless(_PANEL_READY, "财务面板未构建，跳过")
 class TestFundLocalRoeTtmPanel(unittest.TestCase):
     """真实面板回归：688300 的 ROE(TTM) 必须平滑，且与报告期口径显著不同。"""
 

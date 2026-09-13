@@ -29,6 +29,13 @@ signal, scheme, regime = m.group(1), m.group(2), m.group(3)
 m2 = re.search(r"账户=([\d.]+)元\s*目标仓数N=(\d+)\s*暴露=([\d.]+)\s*可投=([\d.]+)\s*单仓预算=([\d.]+)\s*宇宙=([\d.]+)", txt)
 account, N, expo, invest, per, universe = (m2.group(i) for i in range(1, 7))
 segm = re.search(r"段指数: (\{.*?\})", txt).group(1)
+# 段状态 / 合格池板块分布 / 板块约束（用于解释"为何候选集中在某板块"）
+_m_seg = re.search(r"段状态\(56周均线\): (.+)", txt)
+SEG_STATE = _m_seg.group(1).strip() if _m_seg else ""
+_m_bd = re.search(r"合格池板块分布: (.+)", txt)
+BOARD_DIST = _m_bd.group(1).strip() if _m_bd else ""
+_m_bc = re.search(r"板块约束: (.+)", txt)
+BOARD_CAP_TXT = _m_bc.group(1).strip() if _m_bc else ""
 
 def mkt(code):
     if code.startswith("920") or code.startswith("8") or code.startswith("4"):
@@ -150,8 +157,9 @@ def netvalue_svg(curves, width=760, height=360):
             + '两线在 2014 年后仍有一定分化（深市个股由深证成指而非上证门控）。实时买仓用 B（当前市场健康）。</div>')
     return "".join(s) + note
 
-def diff_section(cmp):
-    """本周 vs 上周信号对比段。cmp = live_compare.json 内容(可能 None)。"""
+def diff_section(cmp, cur_signal=None):
+    """本周 vs 上周信号对比段。cmp = live_compare.json 内容(可能 None)。
+    cur_signal = 本周 txt 的信号日，用于校验对比数据是否同源（防"本周清单配上周变化"）。"""
     if cmp is None:
         return ('<div class="section"><h2>② 信号 vs 上周变化</h2>'
                 '<div class="note">尚未生成对比数据（先运行 <code>python live_compare.py</code>）。'
@@ -161,6 +169,12 @@ def diff_section(cmp):
     if cur is None:
         return ('<div class="section"><h2>② 信号 vs 上周变化</h2>'
                 '<div class="note">本周信号数据缺失。</div></div>')
+    # 同源校验：对比数据的最新信号日必须等于本周 txt 的信号日，否则隐藏（避免张冠李戴）
+    if cur_signal is not None and str(cur.get("signal_date")) != str(cur_signal):
+        return ('<div class="section"><h2>② 信号 vs 上周变化</h2>'
+                f'<div class="warn">⚠️ 对比数据滞后：本条对比来自 <b>{cur.get("signal_date")}</b>，'
+                f'与本周信号 <b>{cur_signal}</b> 不一致。为避免"本周清单配旧周变化"，此处暂不展示。<br>'
+                '请在 [保存并分析] 完成后刷新本页，或运行 <code>python live_compare.py</code> 刷新对比数据。</div></div>')
     if prev is None:
         return (f'<div class="section"><h2>② 信号 vs 上周变化</h2>'
                 f'<div class="note">本周信号 {cur["signal_date"]} 为首次信号（全局周轴不足 2 周），'
@@ -288,35 +302,158 @@ for lab, key in [("current 上证56w", "current_全样本1996+"), ("B 分市场�
                 f"<td>{r['empty_frac']*100:.0f}%</td><td>{r['avg_turnover']*100:.0f}%</td></tr>")
 
 # ---------- 表格行 ----------
-def pos_rows(items, show_star=False):
+def score_color(score, lo, hi):
+    """评分 → 颜色：**同批内评分越高越红**（色相 210° 蓝 → 0° 红，线性插值）。
+
+    返回 (文字色, 背景色)。`lo == hi`（同批同分）时取中间色。
+    文字用高饱和色、背景用同色相低透明度，形成"热力"观感，便于从高到低扫读。
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return "#8b98a9", "transparent"
+    t = 0.5 if hi <= lo else (s - lo) / (hi - lo)
+    t = max(0.0, min(1.0, t))
+    hue = 210.0 - 210.0 * t                      # 210(蓝) → 0(红)
+    return f"hsl({hue:.0f}, 85%, 64%)", f"hsla({hue:.0f}, 85%, 45%, {0.10 + 0.22 * t:.2f})"
+
+
+def pos_rows(items, show_star=False, score_range=None):
     out = ""
     for it in items:
         mk = mkt(it["code"])
         tag = f"<span class='mkt' style='background:{MKT_COLOR[mk]}'>{MKT_CN[mk]}</span>"
         star = "<span class='star'>★建仓</span>" if (show_star and it.get("star")) else ""
+        pct = it.get("pct", 0.0) or 0.0
+        if score_range:
+            _fg, _bg = score_color(pct, score_range[0], score_range[1])
+            score_td = (f"<td class='num' style='color:{_fg};background:{_bg};"
+                        f"font-weight:700'>{pct:.2f}</td>")
+        else:
+            score_td = f"<td class='num'>{pct:.2f}</td>"
         out += (f"<tr><td><b>{it['code']}</b></td><td>{it.get('name') or '—'}</td>"
                 f"<td>{it.get('industry','—')}</td><td>{tag}</td>"
                 f"<td class='num'>{it['price']:.2f}</td>"
                 f"<td class='num'>{it.get('roe',0):.1f}%</td>"
                 f"<td class='num'>{it.get('fcf',0):.2f}</td>"
                 f"<td class='num' style='color:#2ecc71'>+{it['mom']:.0f}%</td>"
-                f"<td class='num'>{it.get('pct',0):.2f}</td>{star}")
+                f"{score_td}<td>{star}</td>")
         if "lots" in it:
             out += f"<td class='num'>{it['lots']}</td><td class='num'>{it['amt']:,}</td>"
         out += "</tr>"
     return out
 
-actual_html = pos_rows(actual)
-pool_html = pos_rows(pool, show_star=True)
+# ---------- ① 我的实际持仓（来自左侧「当前持仓」录入 holdings.json） ----------
+_HOLD_PATH = os.path.join(BASE, "holdings.json")
+try:
+    holdings = json.load(open(_HOLD_PATH, encoding="utf-8")) if os.path.exists(_HOLD_PATH) else []
+except Exception:
+    holdings = []
+
+_actual_codes = {a["code"] for a in actual}
+_pool_by_code = {p["code"]: p for p in pool}
+_watch_by_code = {}
+for _w in watch:
+    _watch_by_code.setdefault(_w["code"], _w)
+
+
+def hold_status(code):
+    """给每只持仓标注模型本周信号。返回 (文案, 颜色)。"""
+    if code in _actual_codes:
+        return "★ 本轮建仓", "#2ecc71"
+    if code in _pool_by_code:
+        return "合格池", "#4aa3ff"
+    if code in _watch_by_code:
+        return "观察：" + _watch_by_code[code]["reason"], "#e67e22"
+    return "未在模型名单", "#8b98a9"
+
+
+def holdings_rows(items):
+    """① 表体：真实持仓 + 本周信号；空则显示占位提示。"""
+    if not items:
+        return ("<tr><td colspan='8' class='note' style='text-align:center;padding:16px'>"
+                "暂无持仓（在左侧「当前持仓」录入后，本表自动同步）</td></tr>")
+    out = ""
+    for h in items:
+        code = h.get("code", "")
+        mk = mkt(code)
+        tag = f"<span class='mkt' style='background:{MKT_COLOR[mk]}'>{MKT_CN[mk]}</span>"
+        st, col = hold_status(code)
+        amt = h.get("amount", 0) or 0
+        ding = "<span class='ding'>定投</span>" if h.get("dingtou") else "—"
+        out += (f"<tr><td><b>{code}</b></td><td>{h.get('name') or '—'}</td>"
+                f"<td>{h.get('industry') or '—'}</td><td>{tag}</td>"
+                f"<td class='num'>{amt:,.0f}</td><td>{ding}</td>"
+                f"<td>{h.get('date') or '—'}</td>"
+                f"<td style='color:{col}'>{st}</td></tr>")
+    return out
+
+
+holdings_html = holdings_rows(holdings)
+hold_total = sum((h.get("amount", 0) or 0) for h in holdings)
+
+# ③ 合格池按模型评分降序完整列出（不再截断）；评分列按**同批相对**渐变着色（越高越红）
+pool.sort(key=lambda r: -r.get("pct", 0.0))
+_pool_scores = [p.get("pct", 0.0) or 0.0 for p in pool]
+_score_lo, _score_hi = (min(_pool_scores), max(_pool_scores)) if _pool_scores else (0.0, 1.0)
+pool_html = pos_rows(pool, show_star=True, score_range=(_score_lo, _score_hi))
+SCORE_LEGEND = ('评分列颜色 = 同批相对（<span style="color:hsl(210,85%,64%)">低</span>'
+                ' → <span style="color:hsl(0,85%,64%)">高</span>，越红分越高；本批 '
+                f'{_score_lo:.2f}~{_score_hi:.2f}）')
 watch_html = "".join(
     f"<tr><td><b>{w['code']}</b></td><td>{w['industry']}</td><td class='num'>{w['roe']:.1f}%</td><td>{w['reason']}</td></tr>"
     for w in watch)
 
-diff_html = diff_section(cmp)
+diff_html = diff_section(cmp, signal)
 
-total_amt = sum(a["amt"] for a in actual)
-regime_cn = "全部上涨 → 建议建仓" if regime == "True" else "存在下跌段 → 空仓观望"
-regime_color = "#2ecc71" if regime == "True" else "#e74c3c"
+# B 方案是"分市场段"各自裁决，res['regime_up'] 恒为 True；
+# 直接显示"全部上涨 → 建议建仓"会误导（实际本周可能只有 1 个段 UP）→ 按段状态概括
+_SEG_UP, _SEG_DOWN = [], []
+for _it in SEG_STATE.split():
+    if "=" not in _it:
+        continue
+    _n, _v = _it.split("=", 1)
+    (_SEG_UP if _v.strip().upper() == "UP" else _SEG_DOWN).append(_n)
+
+SEG_SUMMARY = ""
+if scheme.upper() == "B" and (_SEG_UP or _SEG_DOWN):
+    SEG_SUMMARY = (f"{'、'.join(_SEG_UP)} UP" if _SEG_UP else "无段 UP")
+    if _SEG_DOWN:
+        SEG_SUMMARY += f" · {len(_SEG_DOWN)} 段 DOWN"
+    if not _SEG_DOWN:
+        regime_cn, regime_color = f"5 段全 UP → 建议建仓（{SEG_SUMMARY}）", "#2ecc71"
+    elif _SEG_UP:
+        regime_cn, regime_color = f"仅 {SEG_SUMMARY} → 仅该板块可买", "#e67e22"
+    else:
+        regime_cn, regime_color = f"5 段全 DOWN → 空仓观望", "#e74c3c"
+else:
+    regime_cn = "全部上涨 → 建议建仓" if regime == "True" else "存在下跌段 → 空仓观望"
+    regime_color = "#2ecc71" if regime == "True" else "#e74c3c"
+
+# 顶部卡片：市场段摘要（仅 B 方案；全球方案沿用"市场状态"卡片）
+SEG_CARD = (f'<div class="card"><div class="k">市场段(56周MA)</div>'
+            f'<div class="v small" style="color:{regime_color}">{SEG_SUMMARY}</div></div>'
+            ) if SEG_SUMMARY else ""
+
+# ③ 的"为什么全是同一板块"说明（段状态 + 板块分布 + 板块约束是否放宽）
+_dim = []
+if SEG_STATE:
+    _dim.append(f"本周 5 个市场段（56 周均线）：<b>{SEG_STATE}</b>")
+if BOARD_DIST:
+    _dim.append(f"合格候选板块分布：<b>{BOARD_DIST}</b>")
+if BOARD_CAP_TXT:
+    _dim.append(f"组合约束：{BOARD_CAP_TXT}")
+POOL_DIM_NOTE = f'<div class="note">{"；".join(_dim)}。</div>' if _dim else ""
+
+_bd_items = [x for x in BOARD_DIST.split() if "=" in x]
+if len(_bd_items) == 1 and "已放宽板块=是" in BOARD_CAP_TXT:
+    _only = _bd_items[0].split("=")[0]
+    POOL_DIM_NOTE += (
+        f'<div class="warn">⚠️ 本周合格候选<b>全部集中在「{_only}」</b>：B 方案按市场段过滤，'
+        f'本周只有「{_SEG_UP[0] if _SEG_UP else "该段"}」站上 56 周均线，其余段 DOWN 的个股即使质量达标也不入选。<br>'
+        f'因此"单板块最多 {_bd_items[0].split("=")[1]} 只"的上限已被<b>自动放宽</b>'
+        f'（<b>保留单行业上限</b>），以避免"仓位被迫减半、单票风险翻倍"。'
+        f'如果你更希望严格限板块（宁可持仓变少/仓位变小），可调低 <code>BOARD_CAP</code> 或关闭该放宽逻辑。</div>')
 
 CSS = """
 * { box-sizing: border-box; margin:0; padding:0; }
@@ -336,6 +473,7 @@ th { color:#8b98a9; font-weight:600; background:#0f141b; position:sticky; top:0;
 td.num { text-align:right; font-variant-numeric:tabular-nums; }
 .mkt { color:#0d1117; font-size:11px; padding:2px 7px; border-radius:4px; font-weight:700; }
 .star { color:#ffd166; font-size:11px; font-weight:700; }
+.ding { color:#2ecc71; font-size:11px; font-weight:700; }
 tr:hover { background:#1c2230; }
 .win { color:#2ecc71; font-size:11px; margin-left:6px; }
 .note { color:#8b98a9; font-size:12px; margin-top:10px; }
@@ -377,27 +515,29 @@ body = f"""
   <div class="card"><div class="k">当前方案</div><div class="v small">B · 分市场段指数 56 周 MA</div></div>
   <div class="card"><div class="k">市场状态</div><div class="v small" style="color:{regime_color}">{regime_cn}</div></div>
   <div class="card"><div class="k">账户 / 目标仓数</div><div class="v small">{account} 元 / {N} 仓</div></div>
-  <div class="card"><div class="k">实际建仓</div><div class="v">{len(actual)} 只<span style="font-size:13px;color:#8b98a9"> · {total_amt:,} 元</span></div></div>
+  <div class="card"><div class="k">我的持仓</div><div class="v">{len(holdings)} 只<span style="font-size:13px;color:#8b98a9"> · {hold_total:,.0f} 元</span></div></div>
+  {SEG_CARD}
 </div>
 
 <div class="section">
-  <h2>① 实际建仓清单（已下单参考）</h2>
+  <h2>① 我的实际持仓（来自左侧「当前持仓」录入）</h2>
   <table>
-    <tr><th>代码</th><th>名称</th><th>行业</th><th>市场</th><th class="num">现价</th><th class="num">ROE</th><th class="num">FCF/N</th><th class="num">52w动量</th><th class="num">分位</th><th class="num">手数</th><th class="num">金额</th></tr>
-    {actual_html}
+    <tr><th>代码</th><th>名称</th><th>行业</th><th>市场</th><th class="num">金额(元)</th><th>定投</th><th>买入日期</th><th>本周信号</th></tr>
+    {holdings_html}
   </table>
-  <div class="note">FCF/N = 自由现金流/净利润（&gt;0 表示盈利有真金白银支撑）；分位 = 当前价在 52 周区间的位置。本次 5 段指数全部站上 56 周均线 → 满仓候选，按"价格×100 ≤ 单仓预算"自动集中到 {len(actual)} 只。</div>
+  <div class="note">本表 = 你在左侧「当前持仓」录入的真实持仓，金额以你的录入为准；持仓为空时显示"暂无"。末列「本周信号」为模型建议：★本轮建仓 = 已选入模型建仓；合格池 = 通过质量+动量+站线+段 regime；观察：&lt;原因&gt; = 质量过关但未触发买点；未在模型名单 = 不在本周候选。<b>模型建议不构成投资建议。</b></div>
 </div>
 
 {diff_html}
 
 <div class="section">
-  <h2>③ 合格买仓池（质量+动量+站线+段 regime，{len(pool)} 只）</h2>
+  <h2>③ 合格买仓池（质量+动量+站线+段 regime，{len(pool)} 只 · 按评分降序全量）</h2>
   <table>
-    <tr><th>代码</th><th>名称</th><th>行业</th><th>市场</th><th class="num">现价</th><th class="num">ROE</th><th class="num">FCF/N</th><th class="num">52w动量</th><th class="num">分位</th><th>状态</th></tr>
+    <tr><th>代码</th><th>名称</th><th>行业</th><th>市场</th><th class="num">现价</th><th class="num">ROE</th><th class="num">FCF/N</th><th class="num">52w动量</th><th class="num">评分</th><th>状态</th></tr>
     {pool_html}
   </table>
-  <div class="note">★建仓 = 本轮已选入实际建仓；其余为同批合格但受"单仓预算/整手"约束未入选的候选。颜色区分沪市/深市/北交所。</div>
+  <div class="note">本表<b>按模型评分从高到低完整列出本周全部合格候选（共 {len(pool)} 只）</b>。★建仓 = 本轮已选入实际建仓；其余为同批合格但受"单仓预算/整手"约束未入选的候选。颜色区分沪市/深市/北交所；{SCORE_LEGEND}。</div>
+  {POOL_DIM_NOTE}
 </div>
 
 <div class="section">
@@ -458,4 +598,4 @@ if os.path.exists(old) and os.path.abspath(old) != os.path.abspath(out):
     except OSError:
         pass
 print("OK ->", out)
-print("actual:", len(actual), "pool:", len(pool), "watch:", len(watch), "total_amt:", total_amt)
+print("holdings:", len(holdings), "pool:", len(pool), "watch:", len(watch), "hold_total:", hold_total)

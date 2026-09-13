@@ -94,6 +94,14 @@ def _persist_dashboard(res, txt):
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(txt + "\n")
     log_line(f"已写 txt: {txt_path}")
+    # 同步刷新"本周 vs 上周"对比：复用已算好的 res 只重算上周，
+    # 保证看板 ①③(本周) 与 ②(上周对比) 数据同源，避免混用过期 live_compare.json
+    try:
+        import live_compare as LC
+        LC.write_compare(res)
+        log_line("live_compare.json 已刷新（与本周 txt 同源）")
+    except Exception as e:
+        log_line(f"live_compare 刷新失败: {e}")
     try:
         dashboard_py = os.path.join(_ROOT, "modules", "strategy", "build_dashboard.py")
         if os.path.exists(dashboard_py):
