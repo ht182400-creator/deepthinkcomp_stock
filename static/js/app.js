@@ -50,6 +50,19 @@ function adviceTag(a) {
   return `<span class="tag ${map[a] || 'advice-watch'}">${a}</span>`;
 }
 
+// 评分 → 颜色：同批内评分越高越红（色相 210° 蓝 → 0° 红），与 dashboard HTML 的 score_color 对齐。
+// 白底页面上使用实心深色徽章 + 白色文字，保证对比度清晰可读。
+function scoreColor(score, lo, hi) {
+  const s = Number(score);
+  if (!Number.isFinite(s)) return ['#ffffff', '#8b98a9'];
+  const t = (hi <= lo) ? 0.5 : Math.max(0, Math.min(1, (s - lo) / (hi - lo)));
+  const hue = 210 - 210 * t;
+  // 深色实心背景 + 白字：低分深蓝，高分深红
+  const bg = `hsl(${hue.toFixed(0)}, 80%, 38%)`;
+  const fg = '#ffffff';
+  return [fg, bg];
+}
+
 // ==================== 时钟 ====================
 function tick() {
   const now = new Date();
@@ -312,6 +325,11 @@ function renderRecs(res) {
   selected.sort(sortFn);
   others.sort(sortFn);
 
+  // 评分同批相对渐变：越高越红（色相 210°蓝 → 0°红）
+  const allScores = [...selected, ...others].map(c => c.score).filter(s => Number.isFinite(s));
+  const scoreLo = allScores.length ? Math.min(...allScores) : 0;
+  const scoreHi = allScores.length ? Math.max(...allScores) : 1;
+
   const head = `<div class="pane-head"><span>本周推荐（点击代码查看行情）</span>
     <span class="signal">信号日 ${res.signal_date} · ${res.summary.regime_cn}</span></div>`;
 
@@ -326,6 +344,7 @@ function renderRecs(res) {
   </tr></thead>`;
 
   const row = c => {
+    const [scoreFg, scoreBg] = scoreColor(c.score, scoreLo, scoreHi);
     const star = c.is_top ? '<span class="tag tag-star">⭐精选</span>' : '';
     const heldTag = c.held ? '<span class="tag tag-held">已持仓</span>' : '';
     let budget = '';
@@ -339,7 +358,7 @@ function renderRecs(res) {
         <div class="cell-code"><b class="code-text">${c.code}</b>${star}${heldTag}${budget}</div>
       </td>
       <td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.industry || '—')}</td><td>${mktTag(c.code)}</td>
-      <td class="num score-buy"><b>${c.score.toFixed(0)}</b></td>
+      <td class="num score-buy"><span class="score-badge" style="color:${scoreFg};background:${scoreBg}"><b>${c.score.toFixed(0)}</b></span></td>
       <td>${adviceTag(c.advice)}</td><td>${c.action || '—'}</td>
       <td style="color:#6b7280;font-size:12px" title="${escapeHtml(c.desc || '')}"><div class="cell-desc">${escapeHtml(c.desc)}</div></td></tr>`;
   };
@@ -357,7 +376,8 @@ function renderRecs(res) {
     body += others.map(row).join('');
   }
 
-  $('#pane-rec').innerHTML = head + `<table class="rec-table">${thead}<tbody>${body}</tbody></table>`;
+  const scoreLegend = `<div class="note">评分列颜色 = 同批相对（<span style="color:hsl(210,85%,64%)">低</span> → <span style="color:hsl(0,85%,64%)">高</span>，越红分越高；本批 ${scoreLo.toFixed(0)}~${scoreHi.toFixed(0)})</div>`;
+  $('#pane-rec').innerHTML = head + `<table class="rec-table">${thead}<tbody>${body}</tbody></table>` + scoreLegend;
   // [DEBUG] 渲染后报告行列数 + 徽章是否真实存在
   const renderedTable = $('#pane-rec table');
   console.log('[renderRecs] 渲染完 table 行数:', renderedTable?.rows.length, '| HTML 长度:', body.length);

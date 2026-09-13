@@ -119,6 +119,23 @@ tbody tr.selected td { background: #eff6ff; }
   white-space: normal;
 }
 
+/* 评分列：深色实心徽章 + 白色文字，白底页面上清晰可读 */
+#pane-rec table.rec-table tbody td.score-buy {
+  text-align: center;
+  vertical-align: middle;
+}
+#pane-rec table.rec-table tbody td.score-buy .score-badge {
+  display: inline-block;
+  min-width: 32px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
 .tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 4px; font-weight: 600; vertical-align: middle; }
 .tag-up { background: #d1fae5; color: #047857; }
 .tag-down { background: #fee2e2; color: #b91c1c; }

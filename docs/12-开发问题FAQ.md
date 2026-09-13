@@ -13,6 +13,7 @@
 - [Q7 分时图均价显示成 2.17（现价 219）、涨跌幅一长串小数](#q7)
 - [Q8 合格买仓池为什么全是沪市（科创板）？不是"同一市场最多 2 只"吗？](#q8)
 - [Q9 分时图涨跌幅对了，但均价还是不对（均价 1.77 / 现价 176.31）](#q9)
+- [Q10 ②「本周推荐」评分列在白底页面上渐变太淡、得分看不清](#q10)
 
 ---
 
@@ -261,3 +262,19 @@ Q7 修"均价小 100 倍"时，把自校准 `_normalize_minute_avg` 加到了 `/
 | `server.py` | 新增 `/api/holdings/clear`；`_rebuild_dashboard()` 持仓变更后同步看板 |
 | `static/index.html` / `static/js/app.js` | 新增「清空全部持仓」按钮与处理、报告 iframe 刷新 |
 | `tests/test_strategy.py` / `tests/frontend/sidebar.test.js` | 新增回归用例 |
+
+---
+
+<a id="q10"></a>
+## Q10 ②「本周推荐」评分列在白底页面上渐变太淡、得分看不清
+
+**现象**：② 表格「评分」列最初用浅色 `hsla` 背景 + 彩色文字做同批相对渐变（越高越红），在白底页面上背景太淡、数字对比度低，用户反馈"看不清除"。
+
+**根因**：`static/js/app.js` 的 `scoreColor()` 最初背景为同色相低透明度 `hsla(hue,85%,45%,0.10~0.32)`，文字用高饱和 `hsl(hue,85%,64%)`；在白底上浅底色 + 浅色字叠加导致可读性差。
+
+**修复**：改为**深色实心徽章 + 白色文字**——
+- `scoreColor()` 返回 `bg = hsl(hue, 80%, 38%)`（低分深蓝 → 高分深红）、`fg = #ffffff`；
+- 评分列 `<td class="score-buy">` 内包 `<span class="score-badge" style="...">`，由 `style.css` 新增 `#pane-rec table.rec-table tbody td.score-buy` / `.score-badge` 控制圆角（12px）、内边距、最小宽度与阴影；
+- 仍按同批 `min~max` 计算渐变区间（越高越红），表下保留图例说明。
+
+**验证**：`node --check static/js/app.js` 通过；`npm run test:frontend` 64 通过（`renderRecs: 评分列同批相对渐变 + 图例` 用例已同步断言 `.score-badge` 的 hsl 实心背景 + 白字）；`python -m unittest` 258 通过。无需重启服务，建议 Ctrl+F5 硬刷新。

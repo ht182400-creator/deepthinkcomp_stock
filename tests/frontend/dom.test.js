@@ -360,3 +360,54 @@ test('T-DIAG: renderRecs 徽章完整生成（不降级 + 不被 CSS 截断的�
   assert.ok(!/(tbody\s+td\s*\{[^}]*white-space:\s*nowrap\s*;[^}]*text-overflow:\s*ellipsis)/.test(css),
             '存在 td 通用 nowrap+ellipsis 规则会截断 rec-table');
 });
+
+test('renderRecs: 评分列同批相对渐变（越高越红）+ 图例', () => {
+  const w = setupApp(INDEX);
+  const { renderRecs } = w.__app;
+  const res = {
+    signal_date: '20260814',
+    summary: { regime_cn: '测试' },
+    selected_recommends: [
+      { code: '688625', name: '呈和科技', industry: '化学制品', market: 'sh', score: 72.5,
+        advice: '加仓', action: '加仓(已持仓)', held: true, is_top: true, fea_ratio: 52, one_hand: 5847, desc: '测试' },
+      { code: '002484', name: '江海股份', industry: '元件', market: 'sz', score: 70.1,
+        advice: '加仓', action: '加仓(已持仓)', held: true, is_top: true, fea_ratio: 62, one_hand: 6979, desc: '测试' },
+    ],
+    recommends: [
+      { code: '300394', name: '天孚通信', industry: '通信设备', market: 'sz', score: 88.0,
+        advice: '买入', action: '建议建仓', held: false, is_top: false, fea_ratio: 238, one_hand: 26771, desc: '测试' },
+      { code: '688300', name: '联瑞新材', industry: '非金属材料Ⅱ', market: 'sh', score: 78.0,
+        advice: '买入', action: '建议建仓', held: false, is_top: false, fea_ratio: 146, one_hand: 16465, desc: '测试' },
+    ],
+  };
+  renderRecs(res);
+  const pane = w.document.querySelector('#pane-rec');
+  const html = pane.innerHTML;
+
+  // 评分列渲染为深色实心徽章 + 白色文字
+  const scoreCells = pane.querySelectorAll('td.score-buy');
+  assert.equal(scoreCells.length, 4, '4 个评分单元格');
+  scoreCells.forEach(td => {
+    const badge = td.querySelector('.score-badge');
+    assert.ok(badge, '评分列内有 score-badge 徽章');
+    assert.match(badge.getAttribute('style'), /background:\s*hsl\(/, '徽章有 hsl 深色背景');
+    assert.match(badge.getAttribute('style'), /color:\s*#fff/, '徽章使用白色文字');
+  });
+
+  // 最高分（88）应比最低分（70.1）更红：背景色相更小（接近 0）
+  const hueOf = (td) => {
+    const badge = td.querySelector('.score-badge');
+    const m = badge.getAttribute('style').match(/background:\s*hsl\((\d+(?:\.\d+)?)/);
+    return m ? parseFloat(m[1]) : -1;
+  };
+  const hues = [...scoreCells].map(hueOf);
+  const maxIdx = hues.findIndex(h => Math.abs(h - Math.min(...hues)) < 0.1);
+  const minIdx = hues.findIndex(h => Math.abs(h - Math.max(...hues)) < 0.1);
+  assert.ok(scoreCells[maxIdx].textContent.includes('88'), '最高分对应色相最小（最红）');
+  assert.ok(scoreCells[minIdx].textContent.includes('70'), '最低分对应色相最大（最蓝）');
+
+  // 图例与区间
+  assert.ok(html.includes('评分列颜色 = 同批相对'), '有评分渐变图例');
+  assert.ok(html.includes('70'), '图例含本批最低分');
+  assert.ok(html.includes('88'), '图例含本批最高分');
+});
