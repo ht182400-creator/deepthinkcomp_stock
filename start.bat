@@ -16,7 +16,7 @@ echo    Python: %MANAGED_PYTHON%
 
 REM ---------- Free port (dump netstat to temp file, then parse) ----------
 echo.
-echo [0/3] Freeing port %PORT% ...
+echo [0/4] Freeing port %PORT% ...
 set "FOUND=0"
 set "NSFILE=%TEMP%\dtcs_ns_%RANDOM%.txt"
 netstat -ano > "%NSFILE%" 2>nul
@@ -36,9 +36,28 @@ if "%FOUND%"=="0" (
     echo    Port %PORT% clear.
 )
 
+REM ---------- Dependency self-check (core packages only) ----------
+REM  server.py exits at import stage when deps are missing, so probe and install first.
+echo.
+echo [1/4] Checking core dependencies (fastapi/uvicorn/requests/httpx/pypinyin) ...
+"%MANAGED_PYTHON%" -c "import fastapi,uvicorn,requests,httpx,pypinyin" >nul 2>&1
+if errorlevel 1 (
+    echo     Missing core deps - running pip install -r requirements.txt ...
+    "%MANAGED_PYTHON%" -m pip install -r "%PROJECT_DIR%requirements.txt" --disable-pip-version-check --no-warn-script-location
+    if errorlevel 1 (
+        echo     [ERROR] pip install failed. Install manually:
+        echo         "%MANAGED_PYTHON%" -m pip install -r "%PROJECT_DIR%requirements.txt"
+        pause
+        exit /b 1
+    )
+    echo     Dependencies installed.
+) else (
+    echo     Core deps OK.
+)
+
 REM ---------- Start ----------
 echo.
-echo [1/3] Starting server on http://localhost:%PORT%
+echo [2/4] Starting server on http://localhost:%PORT%
 echo         API docs: http://localhost:%PORT%/docs
 echo         Press Ctrl+C to stop
 echo ============================================================

@@ -116,7 +116,12 @@ class TestApiStrategy(unittest.TestCase):
     # ---- /api/analyze ----
     def test_analyze_flow_and_status(self):
         """提交分析 → mock current_candidates → 状态完成含操作卡/精选。"""
-        with patch.object(A.R, "current_candidates", return_value=_fake_res()):
+        # write_compare 会重算前 3 周（读真实通达信数据），测试里必须打桩，否则等不到完成；
+        # _persist_dashboard 会真实写 data/ 与跑 build_dashboard 子进程，也一并打桩避免污染
+        import live_compare as LC
+        with patch.object(A.R, "current_candidates", return_value=_fake_res()), \
+             patch.object(LC, "write_compare", return_value={"history": []}), \
+             patch.object(A, "_persist_dashboard"):
             A.ANALYSIS["running"] = False
             A.ANALYSIS["last_result"] = None
             r = self.client.post("/api/analyze", json={})

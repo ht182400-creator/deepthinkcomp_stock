@@ -184,6 +184,32 @@ def build_recommends(res, holdings, cash, N):
     return selected_recs, recommends
 
 
+#: 市场段英文代码 → 中文名（与 regime_layer2_backtest.SEG_CN 保持一致）
+_SEG_CN = {"sh000001": "上证", "sz399001": "深成指", "sz399006": "创业板指",
+           "sh000688": "科创50", "bj899050": "北证50"}
+
+
+def _regime_cn(res):
+    """把市场状态翻译成中文裁决语。
+
+    **背景**：方案 B 是分市场段各自裁决，``res['regime_up']`` 恒为 True
+    （见 ``regime_layer2_backtest.current_candidates`` 里的
+    ``market_up = ... if scheme not in ('B','C') else True``）。若直接按它显示
+    "全部上涨 → 建议建仓"，就会与看板顶部的"5 段全 DOWN"自相矛盾。
+    因此优先按 ``seg_state`` 汇总，仅在没有段数据时回退到 ``regime_up``。
+    """
+    seg = res.get("seg_state") or {}
+    if not seg:
+        return "全部上涨 → 建议建仓" if res.get("regime_up") else "存在下跌段 → 空仓观望"
+    ups = [k for k, v in seg.items() if v]
+    if not ups:
+        return f"{len(seg)} 段全 DOWN → 空仓观望"
+    if len(ups) == len(seg):
+        return f"{len(seg)} 段全 UP → 建议建仓"
+    names = "、".join(_SEG_CN.get(k, k) for k in ups)
+    return f"仅 {names} UP → 仅该板块可买"
+
+
 def build_summary(res, cards, selected_recs, recommends):
     return dict(
         held=len(cards),
@@ -192,5 +218,7 @@ def build_summary(res, cards, selected_recs, recommends):
         obs=len(res["observation"]),
         recommend=len(recommends),
         total_amt=sum(c.get("amount", 0) for c in cards),
-        regime_cn="全部上涨 → 建议建仓" if res["regime_up"] else "存在下跌段 → 空仓观望",
+        regime_cn=_regime_cn(res),
+        # 段状态原样带出，供前端/报告展示"哪些段 UP"（英文键 → True/False）
+        seg_state=dict(res.get("seg_state") or {}),
     )

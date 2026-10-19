@@ -88,18 +88,23 @@ def _auto_rebalance(cards, holdings, settings, res, actions):
     return holdings
 
 
-def _persist_dashboard(res, txt):
-    """落盘 txt + 生成 dashboard html（保持与老项目行为一致）。"""
+def _persist_dashboard(res, txt, cmp_out=None):
+    """落盘 txt + 生成 dashboard html（保持与老项目行为一致）。
+
+    cmp_out 为外部已算好的 write_compare 结果（含 history）；传入时不再重复计算，
+    否则会多跑 3 次历史周计算（每次都要遍历全市场）。
+    """
     txt_path = os.path.join(DATA_DIR, f"live_buy_list_{res['signal_date']}.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(txt + "\n")
     log_line(f"已写 txt: {txt_path}")
-    # 同步刷新"本周 vs 上周"对比：复用已算好的 res 只重算上周，
-    # 保证看板 ①③(本周) 与 ②(上周对比) 数据同源，避免混用过期 live_compare.json
+    # 同步刷新"本周 vs 上周/前 3 周"对比：复用已算好的 res 只重算历史周，
+    # 保证看板 ①③(本周) 与 ②(历史对比) 数据同源，避免混用过期 live_compare.json
     try:
         import live_compare as LC
-        LC.write_compare(res)
-        log_line("live_compare.json 已刷新（与本周 txt 同源）")
+        if cmp_out is None:
+            cmp_out = LC.write_compare(res)
+        log_line(f"live_compare.json 已刷新（history {len(cmp_out.get('history') or [])} 周）")
     except Exception as e:
         log_line(f"live_compare 刷新失败: {e}")
     try:
@@ -140,6 +145,18 @@ def run_analyze(force_refresh=False, auto_track=False):
             ANALYSIS["message"] = "自动跟踪调仓..."
             holdings = _auto_rebalance(cards, holdings, settings, res, actions)
 
+        # 本周 vs 前 3 周：只算一次，Web「② 本周推荐」与 HTML 看板共用同一份数据。
+        # 放在 result 构建前，便于把 history 一并返回给前端。
+        ANALYSIS["percent"] = 80
+        ANALYSIS["message"] = "生成历史周对比（前 3 周）..."
+        cmp_out = {}
+        try:
+            import live_compare as LC
+            cmp_out = LC.write_compare(res)
+            log_line(f"live_compare 已刷新（history {len(cmp_out.get('history') or [])} 周）")
+        except Exception as e:
+            log_line(f"live_compare 生成失败: {e}")
+
         result = dict(
             ts=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             signal_date=res["signal_date"], regime_up=res["regime_up"],
@@ -147,6 +164,8 @@ def run_analyze(force_refresh=False, auto_track=False):
             cards=cards, recommends=recommends,
             selected_recommends=selected_recs,
             summary=H.build_summary(res, cards, selected_recs, recommends),
+            # 最近 4 个信号日快照（老 → 新），前端据此算"前 3 周进出"
+            history=cmp_out.get("history") or [],
         )
         ANALYSIS["last_result"] = result
         ANALYSIS["last_ts"] = result["ts"]
@@ -157,7 +176,7 @@ def run_analyze(force_refresh=False, auto_track=False):
         # 落盘 txt + dashboard html
         try:
             txt = R.format_live_report(res)
-            _persist_dashboard(res, txt)
+            _persist_dashboard(res, txt, cmp_out)
         except Exception as e:
             log_line(f"落盘 dashboard 异常: {e}")
     except Exception as e:

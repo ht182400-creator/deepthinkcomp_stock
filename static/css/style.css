@@ -235,3 +235,26 @@ footer { text-align: center; color: var(--text-4); font-size: 12px; padding: 18p
   .stock-card h4 { font-size: 13px; }
   .stock-card.tall { min-height: 240px; }
 }
+
+/* ===== 多周进出对比（② 本周推荐） ===== */
+.hist-wrap { margin-top: 20px; }
+.hist-title { font-size: 13px; font-weight: 700; color: var(--text-2); margin-bottom: 8px; }
+table.hist-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.hist-table th,
+table.hist-table td {
+  padding: 7px 8px; border-bottom: 1px solid var(--border);
+  text-align: left; vertical-align: middle;
+}
+table.hist-table th { background: #f9fafb; color: var(--text-3); font-weight: 600; white-space: nowrap; }
+table.hist-table td.hist-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.hist-table td.hist-seg { white-space: nowrap; color: var(--text-3); }
+table.hist-table tr.hist-cur td { background: #fff7ed; }
+table.hist-table td.hist-in { color: #047857; font-weight: 700; }
+table.hist-table td.hist-out { color: #b91c1c; font-weight: 700; }
+.hist-chip {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 1px 6px;
+  border-radius: 4px; background: #f3f4f6; border: 1px solid var(--border);
+  font-size: 11px; color: var(--text-2); white-space: nowrap;
+}
+.hist-none { color: var(--text-4); }
+.hist-more { margin-left: 4px; color: var(--text-3); }

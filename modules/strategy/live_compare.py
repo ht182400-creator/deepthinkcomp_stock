@@ -23,14 +23,31 @@ import regime_layer2_backtest as R
 # 产物统一写到项目 data/（build_dashboard 的读取位置）
 DATA = os.path.normpath(os.path.join(HERE, "..", "..", "data"))
 
+#: 历史周数（含本周）。前端「② 本周推荐」展示前 3 周的进出对比，
+#: 因此需要本周 + 前 3 周共 4 个信号日快照。
+HISTORY_WEEKS = 4
+
 
 def _slim(res):
     """把 current_candidates 的完整结果裁剪成看板需要的精简结构。"""
     if res is None:
         return None
+    # B 方案是"分市场段"各自裁决，res['regime_up'] 恒为 True（不能代表真实强弱）。
+    # 必须把段状态一并落盘，否则看板 ② 会拿 regime_up 误显示"全段 UP → 建议建仓"，
+    # 与顶部"5 段全 DOWN → 空仓观望"自相矛盾。键用中文名，看板直接展示。
+    _seg = res.get('seg_state') or {}
+    seg_state = {}
+    for _k in R.SEG_ORDER:
+        if _k in _seg:
+            seg_state[R.SEG_CN.get(_k, _k)] = "UP" if _seg[_k] else "DOWN"
+    # 兼容 seg_state 里出现非标准键的情况（理论上不会，防御性保留）
+    for _k, _v in _seg.items():
+        if _k not in R.SEG_ORDER:
+            seg_state[R.SEG_CN.get(_k, _k)] = "UP" if _v else "DOWN"
     return dict(
         signal_date=res['signal_date'],
         regime_up=res['regime_up'],
+        seg_state=seg_state,
         n_stocks=res['n_stocks'],
         selected=[dict(code=r['code'], name=r.get('name', r['code']), price=r['price'],
                        lots=r.get('lots', 0), capital=r.get('capital', 0),
@@ -44,6 +61,24 @@ def _slim(res):
     )
 
 
+def _history_item(res):
+    """单个信号日的轻量快照（供前端做多周进出对比）。
+
+    只保留差异计算需要的字段：段状态 + 建仓/合格池的代码、名称、价格。
+    """
+    slim = _slim(res) or {}
+    return dict(
+        signal_date=slim.get("signal_date"),
+        regime_up=slim.get("regime_up"),
+        seg_state=slim.get("seg_state") or {},
+        selected=[dict(code=r["code"], name=r.get("name", r["code"]), price=r["price"])
+                  for r in slim.get("selected") or []],
+        pool=[dict(code=r["code"], name=r.get("name", r["code"]),
+                   price=r["price"], score=r.get("score", 0))
+              for r in slim.get("pool") or []],
+    )
+
+
 def _build(cur, prev, cash, N, scheme, prev_date):
     return dict(scheme=scheme, cash=cash, N=N,
                 current=_slim(cur), prev=_slim(prev),
@@ -52,10 +87,10 @@ def _build(cur, prev, cash, N, scheme, prev_date):
 
 
 def write_compare(cur, cash=None, N=None, scheme=None):
-    """用已算好的本周结果 cur 生成 data/live_compare.json（只重算上周，避免重复算本周）。
+    """用已算好的本周结果 cur 生成 data/live_compare.json（重算上周 + 前 3 周历史）。
 
     参数 cur 为 current_candidates 的返回值；cash/N/scheme 缺省时从 cur 中取。
-    返回写出的 dict。分析流程复用以保证看板 ①②③ 数据同源。
+    返回写出的 dict（含 current/prev/history）。分析流程复用以保证数据同源。
     """
     scheme = scheme or cur.get('scheme', 'B')
     cash = cur.get('cash') if cash is None else cash
@@ -70,7 +105,21 @@ def write_compare(cur, cash=None, N=None, scheme=None):
         prev_date = global_dates[idx - 1]
         prev = R.current_candidates(scheme=scheme, cash=cash, N=N, today=prev_date)
 
+    # 历史快照：本周 + 前 3 个信号周（老 → 新），供前端「前 3 周进出对比」。
+    # 注意：current_candidates 依赖进程内宇宙缓存，多次调用的边际成本很低。
+    hist_res = []
+    for back in range(HISTORY_WEEKS - 1, -1, -1):
+        if idx - back < 0:
+            # 周轴不足：跳过更早的周（back 递减，不能 break）
+            continue
+        if back == 0:
+            hist_res.append(cur)
+        else:
+            hist_res.append(R.current_candidates(
+                scheme=scheme, cash=cash, N=N, today=global_dates[idx - back]))
+
     out = _build(cur, prev, cash, N, scheme, prev_date)
+    out["history"] = [_history_item(r) for r in hist_res]
     os.makedirs(DATA, exist_ok=True)
     json_path = os.path.join(DATA, "live_compare.json")
     with open(json_path, "w", encoding="utf-8") as f:

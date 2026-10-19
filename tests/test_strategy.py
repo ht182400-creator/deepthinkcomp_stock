@@ -72,6 +72,42 @@ class TestHoldings(unittest.TestCase):
         self.assertTrue(s["auto_track"])
         self.assertEqual(s["weekly"], 8000)
 
+    def test_summary_regime_cn_uses_seg_state(self):
+        """B 方案 regime_up 恒 True，summary 必须按 seg_state 出中文裁决语。
+
+        回归：Web ② 曾显示"信号日 20261016 · 全部上涨 → 建议建仓"，
+        而正文是"暂无推荐"，与 5 段全 DOWN 矛盾。
+        """
+        res = _fake_res()
+        res["regime_up"] = True          # B 方案恒 True
+        seg = ["sh000001", "sz399001", "sz399006", "sh000688", "bj899050"]
+
+        res["seg_state"] = {k: False for k in seg}
+        s = H.build_summary(res, [], [], [])
+        self.assertEqual(s["regime_cn"], "5 段全 DOWN → 空仓观望")
+        self.assertEqual(len(s["seg_state"]), 5)
+
+        res["seg_state"] = {k: True for k in seg}
+        s = H.build_summary(res, [], [], [])
+        self.assertEqual(s["regime_cn"], "5 段全 UP → 建议建仓")
+
+        # 部分 UP：列出中文段名
+        res["seg_state"] = {"sh000001": True, "sz399001": False, "sz399006": False,
+                            "sh000688": False, "bj899050": False}
+        s = H.build_summary(res, [], [], [])
+        self.assertEqual(s["regime_cn"], "仅 上证 UP → 仅该板块可买")
+
+    def test_summary_regime_cn_fallback_without_seg_state(self):
+        """旧结果没有 seg_state 时回退到 regime_up，不得抛异常。"""
+        res = _fake_res()
+        res.pop("seg_state", None)
+        res["regime_up"] = True
+        self.assertEqual(H.build_summary(res, [], [], [])["regime_cn"],
+                         "全部上涨 → 建议建仓")
+        res["regime_up"] = False
+        self.assertEqual(H.build_summary(res, [], [], [])["regime_cn"],
+                         "存在下跌段 → 空仓观望")
+
 
 class TestCards(unittest.TestCase):
 
@@ -119,10 +155,12 @@ class TestAnalysis(unittest.TestCase):
         self.assertIn("test line", content)
 
     def test_submit_runs(self):
-        # mock current_candidates 避免真实构建宇宙；同时 mock _persist_dashboard，
-        # 避免其内部刷新 live_compare（会读真实数据）拖慢用例
+        # mock current_candidates 避免真实构建宇宙；同时 mock _persist_dashboard 与
+        # live_compare.write_compare（其内部重算前 3 周，会读真实数据）拖慢用例
+        import live_compare as LC
         with patch.object(A.R, "current_candidates", return_value=_fake_res()), \
-             patch.object(A, "_persist_dashboard"):
+             patch.object(A, "_persist_dashboard"), \
+             patch.object(LC, "write_compare", return_value={"history": []}):
             A.ANALYSIS["last_result"] = None
             ok = A.submit()
             self.assertTrue(ok)
@@ -180,8 +218,10 @@ class TestRecommendRules(unittest.TestCase):
 
     def test_persist_dashboard_after_analyze(self):
         """P2 bug 回归：analyze 完成后必须落盘 txt（live_buy_list_<signal>.txt）。"""
+        import live_compare as LC
         with patch.object(A.R, "current_candidates", return_value=_fake_res()), \
              patch.object(A.R, "format_live_report", return_value="header\nbody"), \
+             patch.object(LC, "write_compare", return_value={"history": []}), \
              patch.object(A, "_persist_dashboard") as pd:
             A.ANALYSIS["last_result"] = None
             A.submit()
@@ -236,6 +276,11 @@ class TestLiveCompare(unittest.TestCase):
         cur["signal_date"] = 20260814
         prev = _fake_res(selected_codes=["600002"], buy_codes=["600002", "600001"])
         prev["signal_date"] = 20260807
+        # B 方案 regime_up 恒 True，真实强弱在 seg_state：本周仅沪主板 UP
+        cur["seg_state"] = {"sh000001": True, "sz399001": False, "sz399006": False,
+                            "sh000688": False, "bj899050": False}
+        prev["seg_state"] = {"sh000001": True, "sz399001": False, "sz399006": False,
+                             "sh000688": False, "bj899050": False}
         tmp = tempfile.mkdtemp()
         with patch.object(R, "_get_universe",
                           return_value=(None, [20260807, 20260814], None, None)), \
@@ -249,6 +294,19 @@ class TestLiveCompare(unittest.TestCase):
         self.assertIn("score", out["current"]["pool"][0])  # 池带评分，供 ③ 排序
         self.assertEqual(out["current"]["selected"][0]["code"], "600000")
         self.assertFalse(out["same_data"])
+        # 段状态必须落盘并翻译成中文名（看板 ② 靠它判断，不能再用 regime_up）
+        self.assertEqual(out["current"]["seg_state"]["上证(沪主板)"], "UP")
+        self.assertEqual(out["current"]["seg_state"]["创业板指"], "DOWN")
+        self.assertEqual(len(out["current"]["seg_state"]), 5)
+        # 多周历史（老 → 新），供前端「前 3 周进出对比」；周轴不足时按实际可得周数
+        self.assertEqual([h["signal_date"] for h in out["history"]], [20260807, 20260814])
+        self.assertEqual(out["history"][-1]["selected"][0]["code"], "600000")
+        self.assertEqual(out["history"][-1]["seg_state"]["创业板指"], "DOWN")
+
+    def test_slim_without_seg_state_is_compatible(self):
+        """旧版结果没有 seg_state 字段时不得抛异常（向后兼容）。"""
+        import live_compare as LC
+        self.assertEqual(LC._slim(_fake_res())["seg_state"], {})
 
 
 @unittest.skipUnless(
@@ -277,14 +335,22 @@ class TestDashboardHtml(unittest.TestCase):
             raise unittest.SkipTest("未生成 dashboard html")
         with open(files[-1], encoding="utf-8") as f:
             cls.html = f.read()
+        # 本周合格池数量（0 只时 ★/评分相关断言无样本可验 → 各测试自行 skip）
+        import re as _re
+        _m = _re.search(r"③ 合格买仓池[^<]*?(\d+) 只", cls.html)
+        cls.pool_size = int(_m.group(1)) if _m else 0
 
     def test_star_inside_td(self):
         """★建仓 必须包在 <td> 内，否则会脱出表格格子（原 bug）。"""
+        if not self.pool_size:
+            self.skipTest("本周合格池 0 只，无 ★建仓 单元格可验")
         self.assertIn("<td><span class='star'>", self.html, "★建仓 应在 <td> 内")
         self.assertNotIn("</td><span class='star'>", self.html, "★建仓 不应裸挂在 <tr> 下")
 
     def test_pool_scores_sorted_desc(self):
         """③ 合格池评分必须降序（评分类带配色样式，后紧跟"状态"单元格）。"""
+        if not self.pool_size:
+            self.skipTest("本周合格池 0 只，无评分可验")
         import re
         seg = self.html.split("③ 合格买仓池")[-1]
         scores = [float(x) for x in re.findall(r"font-weight:700'>(\d\.\d+)</td><td>", seg)]
@@ -298,6 +364,8 @@ class TestDashboardHtml(unittest.TestCase):
 
     def test_pool_score_gradient(self):
         """③ 评分列按**同批相对**渐变着色：评分越高越红（色相 210°→0°）。"""
+        if self.pool_size < 2:
+            self.skipTest("本周合格池不足 2 只，无法验证同批相对渐变")
         import re
         seg = self.html.split("③ 合格买仓池")[-1]
         cells = re.findall(
@@ -314,6 +382,21 @@ class TestDashboardHtml(unittest.TestCase):
         self.assertLess(hues[0], hues[-1], "最高分应比最低分更红")
         self.assertGreater(alphas[0], alphas[-1], "高分背景色应更实")
         self.assertIn("评分列颜色 = 同批相对", self.html, "缺少配色图例")
+
+    def test_diff_banner_not_contradict_segments(self):
+        """② 的 banner 不得与顶部段状态矛盾（B 方案 regime_up 恒 True 的回归）。
+
+        真实数据曾出现：顶部写"5 段全 DOWN → 空仓观望"，
+        ② 却写"连续两周【全段 UP → 建议建仓】"（直接读 regime_up 导致）。
+        """
+        if "② 信号 vs 上周变化" not in self.html:
+            self.skipTest("本页无 ② 对比段（首次信号）")
+        second = self.html.split("② 信号 vs 上周变化")[-1]
+        if "5 段全 DOWN → 空仓观望" in self.html:
+            self.assertIn("5 段全 DOWN → 空仓观望", second,
+                          "② 应按段状态显示全 DOWN，而非 regime_up 的全 UP")
+            self.assertNotIn("全段 UP → 建议建仓", second,
+                             "② 不得在 5 段全 DOWN 时显示'全段 UP → 建议建仓'")
 
 
 if __name__ == "__main__":

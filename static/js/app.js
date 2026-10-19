@@ -298,6 +298,68 @@ function renderCardTable(res) {
   bindCodeClicks();
 }
 
+// ==================== 多周进出对比 ====================
+// history: [{signal_date, seg_state:{中文名:'UP'|'DOWN'}, selected:[{code,name}], pool:[...]}]
+// 顺序为老 → 新；每行相对上一行计算进出，最新一行标记"本周"。
+function renderHistory(history) {
+  if (!Array.isArray(history) || history.length < 2) return '';
+
+  // 段状态概括（不逐段列全，避免窄屏溢出）
+  const segSummary = h => {
+    const seg = h.seg_state || {};
+    const keys = Object.keys(seg);
+    if (!keys.length) return '—';
+    const ups = keys.filter(k => String(seg[k]).toUpperCase() === 'UP');
+    if (!ups.length) return `${keys.length} 段全 DOWN`;
+    if (ups.length === keys.length) return `${keys.length} 段全 UP`;
+    return `仅 ${ups.join('、')} UP`;
+  };
+  // 代码+名称小标签，最多展示 4 个，其余以数量提示
+  const chips = (rows, max = 4) => {
+    if (!rows.length) return '<span class="hist-none">—</span>';
+    const shown = rows.slice(0, max).map(r => escapeHtml(`${r.code} ${r.name || ''}`.trim()));
+    const more = rows.length > max ? `<span class="hist-more">等 ${rows.length} 只</span>` : '';
+    return shown.map(s => `<span class="hist-chip">${s}</span>`).join('') + more;
+  };
+  const codeSet = rows => new Set((rows || []).map(r => r.code));
+
+  const body = history.map((h, i) => {
+    const prev = i > 0 ? history[i - 1] : null;
+    let newSel = [], exitSel = [], newPool = [], exitPool = [];
+    if (prev) {
+      const cs = codeSet(h.selected), ps = codeSet(prev.selected);
+      const cp = codeSet(h.pool), pp = codeSet(prev.pool);
+      newSel = (h.selected || []).filter(r => !ps.has(r.code));
+      exitSel = (prev.selected || []).filter(r => !cs.has(r.code));
+      newPool = (h.pool || []).filter(r => !pp.has(r.code));
+      exitPool = (prev.pool || []).filter(r => !cp.has(r.code));
+    }
+    const isCur = i === history.length - 1;
+    const dash = '<span class="hist-none">—</span>';
+    return `<tr class="${isCur ? 'hist-cur' : ''}">
+      <td class="hist-date"><b>${h.signal_date}</b>${isCur ? ' <span class="tag tag-star">本周</span>' : ''}</td>
+      <td class="hist-seg">${escapeHtml(segSummary(h))}</td>
+      <td class="num">${(h.selected || []).length}</td>
+      <td>${prev ? chips(newSel) : dash}</td>
+      <td>${prev ? chips(exitSel) : dash}</td>
+      <td class="num">${(h.pool || []).length}</td>
+      <td class="num ${prev && newPool.length ? 'hist-in' : ''}">${prev ? newPool.length : '—'}</td>
+      <td class="num ${prev && exitPool.length ? 'hist-out' : ''}">${prev ? exitPool.length : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="hist-wrap">
+    <div class="hist-title">最近 ${history.length - 1} 个信号周 · 进出对比</div>
+    <table class="hist-table">
+      <thead><tr><th>信号日</th><th>市场段(56周MA)</th><th class="num">建仓</th>
+        <th>新进建仓</th><th>退出建仓</th><th class="num">合格池</th>
+        <th class="num">池新进</th><th class="num">池退出</th></tr></thead>
+      <tbody>${body}</tbody></table>
+    <div class="note">每行相对前一个信号周计算。"建仓"= 实际下单清单（受整手/单仓预算约束）；
+      "合格池"= 通过质量+动量+站线+段 regime 的全部候选。池进出为只数，明细见 HTML 报告。</div>
+  </div>`;
+}
+
 // ==================== Tab 渲染: 本周推荐 ====================
 function renderRecs(res) {
   // [DEBUG] 记录渲染输入数据
@@ -331,10 +393,19 @@ function renderRecs(res) {
   const scoreHi = allScores.length ? Math.max(...allScores) : 1;
 
   const head = `<div class="pane-head"><span>本周推荐（点击代码查看行情）</span>
-    <span class="signal">信号日 ${res.signal_date} · ${res.summary.regime_cn}</span></div>`;
+    <span class="signal">信号日 ${res.signal_date} · ${escapeHtml(res.summary?.regime_cn || '')}</span></div>`;
+  const historyHtml = renderHistory(res.history);
 
+  // 空态：这里是"已分析但本周 0 候选"，与"尚未分析"是两件事，文案必须区分开。
+  // 0 候选通常意味着段 regime 全 DOWN（空仓观望），不是没跑分析。
   if (!selected.length && !others.length) {
-    $('#pane-rec').innerHTML = head + '<div class="empty">暂无推荐，请先 [保存并分析]</div>';
+    const sum = res.summary || {};
+    const why = sum.regime_cn ? `：${escapeHtml(sum.regime_cn)}` : '';
+    const poolCnt = sum.buy_pool != null ? sum.buy_pool : 0;
+    $('#pane-rec').innerHTML = head +
+      `<div class="empty">本周无推荐${why}
+         <div class="note">合格池 ${poolCnt} 只 · 模型建议空仓等待，无需操作。</div>
+       </div>` + historyHtml;
     return;
   }
 
@@ -377,7 +448,7 @@ function renderRecs(res) {
   }
 
   const scoreLegend = `<div class="note">评分列颜色 = 同批相对（<span style="color:hsl(210,85%,64%)">低</span> → <span style="color:hsl(0,85%,64%)">高</span>，越红分越高；本批 ${scoreLo.toFixed(0)}~${scoreHi.toFixed(0)})</div>`;
-  $('#pane-rec').innerHTML = head + `<table class="rec-table">${thead}<tbody>${body}</tbody></table>` + scoreLegend;
+  $('#pane-rec').innerHTML = head + `<table class="rec-table">${thead}<tbody>${body}</tbody></table>` + scoreLegend + historyHtml;
   // [DEBUG] 渲染后报告行列数 + 徽章是否真实存在
   const renderedTable = $('#pane-rec table');
   console.log('[renderRecs] 渲染完 table 行数:', renderedTable?.rows.length, '| HTML 长度:', body.length);
@@ -630,7 +701,7 @@ async function dispatchRoute() {
       try {
         const s = await fetchJSON(`${API}/api/analyze/status`);
         if (s.result) renderRecs(s.result);
-        else $('#pane-rec').innerHTML = '<div class="empty">暂无推荐，请先 [保存并分析]</div>';
+        else $('#pane-rec').innerHTML = '<div class="empty">尚未分析，请先 [保存并分析]</div>';
       } catch (e) { $('#pane-rec').innerHTML = `<div class="empty">${escapeHtml(e.message)}</div>`; }
       break;
     }

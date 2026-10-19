@@ -108,12 +108,15 @@ python -m unittest discover tests -p "test_*.py"
 
 ## 版本与发布
 
-- 当前版本：**v0.5.1**（应用内版本号见 `static/index.html`，形如 `V0.5.1 · 2026-09-13`）
-- 发布标签：`v0.5.1`
+- 当前版本：**v0.5.2**（应用内版本号见 `static/index.html`，形如 `V0.5.2 · 2026-10-19`）
+- 发布标签：`v0.5.2`
 - 本次更新：
-  - 把 ②「本周推荐」表格评分列从**浅色 hsla 背景 + 彩色文字**改为**深色实心徽章 + 白色文字**（`app.js scoreColor()` 返回 `hsl(hue,80%,38%)` 深底色 + `#fff`，`style.css` 新增 `.score-badge`），修复白底页面上渐变太淡、得分看不清的问题；仍按同批 `min~max` 相对渐变（越高越红），表下保留图例
-  - 顺带修复：★建仓 脱出表格、命令行清单输出路径错（写 `data/`）、B 方案顶部"市场状态"误显示"全部上涨"（v0.5.0）
-  - 分时均价归一化收口到 service 层唯一入口、策略报告 ③ 段状态/板块约束明示、合格池评分列渐变着色（v0.5.0，详见 `docs/12-开发问题FAQ.md` Q8/Q9）
+  - 修复「市场状态」误用 `regime_up` 的遗留问题：方案 B 下该字段恒为 `True`，导致 Web ② 右上角在 5 段全 DOWN 时仍显示"全部上涨 → 建议建仓"（与"暂无推荐"自相矛盾）；`holdings.build_summary` 与 HTML 看板 ② banner 统一改为按 `seg_state` 裁决
+  - Web ② 空态区分「尚未分析」与「已分析但 0 候选」：后者显示"本周无推荐：5 段全 DOWN → 空仓观望"，不再让用户重复分析
+  - 新增**前 3 个信号周进出对比**（Web ② 与 HTML 看板 ② 同步）：`live_compare.json` 落盘 4 周 `history`，展示新进/退出建仓与合格池进出
+  - `start.bat` 增加 `[1/4]` 依赖自检：缺失 `fastapi/uvicorn/requests/httpx/pypinyin` 时自动 `pip install -r requirements.txt`（与本文档描述一致）
+  - 测试：后端 42 项通过（3 项因空池跳过）、前端 65 项通过
+  - 历史：v0.5.1 评分列深色徽章、v0.5.0 分时均价归一化/段状态明示
 - 双远程同步：`github`（git@github.com:ht182400-creator/deepthinkcomp_stock.git）与 `forgejo`（本地 http://localhost:3000）
 
 > 本工具仅供研究参考，不构成个人投资建议。

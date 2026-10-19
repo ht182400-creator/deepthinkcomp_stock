@@ -157,6 +157,71 @@ def netvalue_svg(curves, width=760, height=360):
             + '两线在 2014 年后仍有一定分化（深市个股由深证成指而非上证门控）。实时买仓用 B（当前市场健康）。</div>')
     return "".join(s) + note
 
+def history_section(cmp):
+    """最近 3 周进出对比表（数据来自 live_compare.json 的 history）。
+
+    每行相对前一个信号周计算，便于一眼看出"哪一周开始清仓、哪一周重新建仓"。
+    数据不足 2 周时不渲染。
+    """
+    hist = cmp.get("history") or []
+    if len(hist) < 2:
+        return ""
+
+    def seg_txt(h):
+        seg = h.get("seg_state") or {}
+        if not seg:
+            return "—"
+        ups = [k for k, v in seg.items() if str(v).upper() == "UP"]
+        if not ups:
+            return "%d 段全 DOWN" % len(seg)
+        if len(ups) == len(seg):
+            return "%d 段全 UP" % len(seg)
+        return "仅 " + "、".join(ups) + " UP"
+
+    def chips(rows, maxn=3):
+        if not rows:
+            return "<span class='hist-none'>—</span>"
+        s = "".join("<span class='hist-chip'>%s %s</span>" %
+                    (r["code"], r.get("name") or "") for r in rows[:maxn])
+        if len(rows) > maxn:
+            s += "<span class='hist-more'>等 %d 只</span>" % len(rows)
+        return s
+
+    trs = []
+    for i, h in enumerate(hist):
+        prev = hist[i - 1] if i else None
+        sel_codes = {r["code"] for r in h.get("selected") or []}
+        pool_codes = {r["code"] for r in h.get("pool") or []}
+        new_sel = exit_sel = new_pool = exit_pool = []
+        if prev:
+            p_sel = {r["code"] for r in prev.get("selected") or []}
+            p_pool = {r["code"] for r in prev.get("pool") or []}
+            new_sel = [r for r in h.get("selected") or [] if r["code"] not in p_sel]
+            exit_sel = [r for r in prev.get("selected") or [] if r["code"] not in sel_codes]
+            new_pool = [r for r in h.get("pool") or [] if r["code"] not in p_pool]
+            exit_pool = [r for r in prev.get("pool") or [] if r["code"] not in pool_codes]
+        is_cur = (i == len(hist) - 1)
+        dash = "<span class='hist-none'>—</span>"
+        trs.append(
+            "<tr%s><td><b>%s</b>%s</td><td>%s</td><td class='num'>%d</td>"
+            "<td>%s</td><td>%s</td><td class='num'>%d</td><td class='num'>%s</td><td class='num'>%s</td></tr>" % (
+                " class='hist-cur'" if is_cur else "",
+                h.get("signal_date"), " <span class='hist-cur-tag'>本周</span>" if is_cur else "",
+                seg_txt(h), len(h.get("selected") or []),
+                chips(new_sel) if prev else dash, chips(exit_sel) if prev else dash,
+                len(h.get("pool") or []),
+                str(len(new_pool)) if prev else "—",
+                str(len(exit_pool)) if prev else "—"))
+    return (
+        "<div class='hist-wrap'><div class='hist-title'>最近 %d 个信号周 · 进出对比</div>"
+        "<table class='hist-table'><tr><th>信号日</th><th>市场段(56周MA)</th><th class='num'>建仓</th>"
+        "<th>新进建仓</th><th>退出建仓</th><th class='num'>合格池</th>"
+        "<th class='num'>池新进</th><th class='num'>池退出</th></tr>%s</table>"
+        "<div class='note'>每行相对前一个信号周计算；"
+        "建仓=实际下单清单（受整手/单仓预算约束），合格池=通过质量+动量+站线+段 regime 的全部候选。</div></div>"
+        % (len(hist) - 1, "".join(trs)))
+
+
 def diff_section(cmp, cur_signal=None):
     """本周 vs 上周信号对比段。cmp = live_compare.json 内容(可能 None)。
     cur_signal = 本周 txt 的信号日，用于校验对比数据是否同源（防"本周清单配上周变化"）。"""
@@ -180,19 +245,46 @@ def diff_section(cmp, cur_signal=None):
                 f'<div class="note">本周信号 {cur["signal_date"]} 为首次信号（全局周轴不足 2 周），'
                 f'暂无上周对比。下周运行后即可看到变化。</div></div>')
 
-    def reg_label(up):
-        return "全段 UP → 建议建仓" if up else "存在下跌段 → 空仓观望"
+    # B 方案 regime_up 恒为 True → 必须按 seg_state 判断（否则会显示"全段 UP"而实际全 DOWN）。
+    # 旧版 live_compare.json 没有 seg_state 字段，回退到 regime_up（A/C 方案仍准确）。
+    cur_seg = cur.get("seg_state") or {}
+    prev_seg = prev.get("seg_state") or {}
 
-    rc = (cur["regime_up"] != prev["regime_up"])
+    def _up_names(seg):
+        return [k for k, v in seg.items() if str(v).upper() == "UP"]
+
+    def _reg_label(seg, up_flag):
+        """把段状态翻译成一句裁决语；无段数据时按全局 regime_up 兜底。"""
+        if not seg:
+            return "全段 UP → 建议建仓" if up_flag else "存在下跌段 → 空仓观望"
+        ups = _up_names(seg)
+        if not ups:
+            return f"{len(seg)} 段全 DOWN → 空仓观望"
+        if len(ups) == len(seg):
+            return f"{len(seg)} 段全 UP → 建议建仓"
+        return f"仅 {'、'.join(ups)} UP → 仅该板块可买"
+
+    # 变化判定：优先比较"UP 段集合"（B 方案的真实信号）；无段数据才比 regime_up
+    if cur_seg and prev_seg:
+        rc = (sorted(_up_names(cur_seg)) != sorted(_up_names(prev_seg)))
+    else:
+        rc = (cur["regime_up"] != prev["regime_up"])
+    # 维持时配色：全部段 UP 才算"建议建仓"（绿），其余一律橙（观望/部分可买）
+    _cur_ups = _up_names(cur_seg)
+    all_up = (len(_cur_ups) == len(cur_seg)) if cur_seg else bool(cur["regime_up"])
+
     if rc:
         banner_col, banner_txt = ("#e74c3c",
-            f"⚠️ 信号状态变化：上周【{reg_label(prev['regime_up'])}】→ 本周【{reg_label(cur['regime_up'])}】")
-    elif cur["regime_up"]:
+            f"⚠️ 信号状态变化：上周【{_reg_label(prev_seg, prev['regime_up'])}】"
+            f"→ 本周【{_reg_label(cur_seg, cur['regime_up'])}】")
+    elif all_up:
         banner_col, banner_txt = ("#2ecc71",
-            f"✅ 信号状态维持：连续两周【{reg_label(cur['regime_up'])}】（{prev['signal_date']} → {cur['signal_date']}）")
+            f"✅ 信号状态维持：连续两周【{_reg_label(cur_seg, cur['regime_up'])}】"
+            f"（{prev['signal_date']} → {cur['signal_date']}）")
     else:
         banner_col, banner_txt = ("#e67e22",
-            f"⏸ 信号状态维持：连续两周【{reg_label(cur['regime_up'])}】（{prev['signal_date']} → {cur['signal_date']}）")
+            f"⏸ 信号状态维持：连续两周【{_reg_label(cur_seg, cur['regime_up'])}】"
+            f"（{prev['signal_date']} → {cur['signal_date']}）")
 
     cur_sel = {r["code"]: r for r in cur["selected"]}
     prev_sel = {r["code"]: r for r in prev["selected"]}
@@ -273,6 +365,7 @@ def diff_section(cmp, cur_signal=None):
             f'<div class="banner" style="border-color:{banner_col};color:{banner_col}">{banner_txt}</div>'
             f'<div class="diff-stack">{new_html}{exit_html}{hold_html}</div>'
             f'{pool_html}'
+            f'{history_section(cmp)}'
             f'<div class="note">说明：建仓以"实际下单参考"为准（受价格×100≤单仓预算的整手约束）；'
             f'合格池为所有通过质量+动量+站线+段 regime 的候选。若两周间无变化，说明模型信号稳定，'
             f'通常发生于趋势市；若出现退出/新进，多为价格越过 56 周线、动量转负或段 regime 翻转所致。</div>'
@@ -503,6 +596,19 @@ footer { color:#6b7686; font-size:12px; margin-top:30px; border-top:1px solid #2
 .pool-diff-table .col-mkt { width:14%; }
 .pool-diff-table .col-price { width:23%; }
 .pool-diff-table .col-mom { width:23%; }
+/* 多周进出对比 */
+.hist-wrap { margin-top:16px; background:#0f141b; border:1px solid #21262d; border-radius:8px; padding:10px 12px; }
+.hist-title { font-size:13px; font-weight:700; color:#c9d3df; margin-bottom:8px; }
+.hist-table { width:100%; border-collapse:collapse; font-size:12px; }
+.hist-table th, .hist-table td { text-align:left; padding:6px 8px; border-bottom:1px solid #21262d; vertical-align:middle; }
+.hist-table th { color:#8b98a9; font-weight:600; background:#0f141b; white-space:nowrap; }
+.hist-table td.num { text-align:right; font-variant-numeric:tabular-nums; }
+.hist-table tr.hist-cur td { background:#1a1205; }
+.hist-cur-tag { font-size:10px; color:#c2410c; border:1px solid #7c2d12; border-radius:3px; padding:0 4px; }
+.hist-chip { display:inline-block; margin:1px 4px 1px 0; padding:1px 6px; border-radius:3px;
+             background:#161b22; border:1px solid #21262d; color:#c9d3df; white-space:nowrap; }
+.hist-none { color:#6b7686; }
+.hist-more { color:#8b98a9; margin-left:4px; }
 """
 
 body = f"""

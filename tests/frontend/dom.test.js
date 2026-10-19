@@ -100,7 +100,7 @@ function setupApp(html) {
   window.echarts = { init: () => ({ setOption() {}, dispose() {} }) };
 
   // 3) 执行真实 app.js（同一 eval 作用域内导出函数探针到 window.__app）
-  window.eval(APPJS + `;\nwindow.__app = { renderRecs, renderCardTable, renderHoldingsPane, renderBt, renderLog, drawLog, setProgress, loadHoldings, bindCodeClicks, dispatchRoute };`);
+  window.eval(APPJS + `;\nwindow.__app = { renderRecs, renderHistory, renderCardTable, renderHoldingsPane, renderBt, renderLog, drawLog, setProgress, loadHoldings, bindCodeClicks, dispatchRoute };`);
   return window;
 }
 
@@ -122,14 +122,36 @@ function tagBalance(html) {
 }
 
 // ==================== 测试用例 ====================
-test('renderRecs: 无数据 → 空态提示（不残表）', () => {
+test('renderRecs: 已分析但 0 候选 → 空仓提示，不再提示"请先分析"', () => {
   const w = setupApp(INDEX);
   const { renderRecs } = w.__app;
-  renderRecs({ signal_date: '20260814', summary: { regime_cn: '' },
-               selected_recommends: [], recommends: [] });
+  renderRecs({ signal_date: '20261016', summary: { regime_cn: '5 段全 DOWN → 空仓观望', buy_pool: 0 },
+              selected_recommends: [], recommends: [] });
   const pane = w.document.querySelector('#pane-rec');
-  assert.ok(pane.textContent.includes('暂无推荐'), '空态提示');
-  assert.ok(!pane.querySelector('table'), '空态不渲染表格');
+  assert.ok(pane.textContent.includes('本周无推荐'), '应提示本周无推荐');
+  assert.ok(pane.textContent.includes('5 段全 DOWN → 空仓观望'), '应带出真实市场状态');
+  assert.ok(!pane.textContent.includes('请先 [保存并分析]'), '已分析过就不该让用户重跑');
+  assert.ok(!pane.querySelector('table'), '空态不渲染推荐表格');
+});
+
+test('renderHistory: 相对前一周计算进出，最新一行标记本周', () => {
+  const w = setupApp(INDEX);
+  const { renderHistory } = w.__app;
+  const html = renderHistory([
+    { signal_date: '20260925', seg_state: { '上证': 'UP', '深成指': 'DOWN' },
+      selected: [{ code: '600000', name: '浦发银行' }],
+      pool: [{ code: '600000', name: '浦发银行' }, { code: '600001', name: '邯郸钢铁' }] },
+    { signal_date: '20261009', seg_state: { '上证': 'DOWN', '深成指': 'DOWN' },
+      selected: [], pool: [{ code: '600001', name: '邯郸钢铁' }] },
+    { signal_date: '20261016', seg_state: { '上证': 'DOWN', '深成指': 'DOWN' },
+      selected: [], pool: [] },
+  ]);
+  assert.ok(html.includes('最近 2 个信号周'), '标题显示对比周数');
+  assert.ok(html.includes('600000'), '退出建仓应列出上上周代码');
+  assert.ok(html.includes('本周'), '最新行标记本周');
+  assert.ok(html.includes('2 段全 DOWN'), '段状态按段数概括');
+  const rows = (html.match(/<tr/g) || []).length;
+  assert.equal(rows, 4, '1 表头 + 3 数据行');
 });
 
 test('renderLog: drawLog 按级别筛选', async () => {
